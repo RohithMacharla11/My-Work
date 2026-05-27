@@ -1,106 +1,238 @@
 <div class="app-nav-bar">
   <span class="nav-home" (click)="goHome()">Home</span>
-    <span class="nav-sep">>></span>
-      <span class="nav-current">{{ pageTitle }}</span>
-      </div>
+  <span class="nav-sep">>></span>
+  <span class="nav-current">{{ pageTitle }}</span>
+</div>
 
-      <app-advance-search
-        [siteContext]="'live'"
-          (searched)="onSearched($event)"
-            (resetted)="onResetted()">
-            </app-advance-search>
+<app-advance-search
+  [siteContext]="'live'"
+  (searched)="onSearched($event)"
+  (resetted)="onResetted()">
+</app-advance-search>
 
-            <div class="summary-container">
+<div class="summary-container">
+  <div class="loading-overlay" *ngIf="isLoading">
+    Loading...
+  </div>
 
-              <div class="loading-overlay" *ngIf="isLoading">
-                  Loading...
-                    </div>
-
-                      <div class="summary-cards" *ngIf="!isLoading">
-
-                          <div class="summary-card" (click)="navigateToAllItems('SenderMaker')">
-                                <div class="card-title">Sender Maker</div>
-                                      <div class="card-count">{{ senderMakerCount }}</div>
-                                            <div class="card-label">Records</div>
-                                                </div>
-
-                                                    <div class="summary-card" (click)="navigateToAllItems('SenderChecker')">
-                                                          <div class="card-title">Sender Checker</div>
-                                                                <div class="card-count">{{ senderCheckerCount }}</div>
-                                                                      <div class="card-label">Records</div>
-                                                                          </div>
-
-                                                                              <div class="summary-card" (click)="navigateToAllItems('ReceiverMaker')">
-                                                                                    <div class="card-title">Receiver Maker</div>
-                                                                                          <div class="card-count">{{ receiverMakerCount }}</div>
-                                                                                                <div class="card-label">Records</div>
-                                                                                                    </div>
-
-                                                                                                        <div class="summary-card" (click)="navigateToAllItems('ReceiverChecker')">
-                                                                                                              <div class="card-title">Receiver Checker</div>
-                                                                                                                    <div class="card-count">{{ receiverCheckerCount }}</div>
-                                                                                                                          <div class="card-label">Records</div>
-                                                                                                                              </div>
-
-                                                                                                                                </div>
-                                                                                                                                </div>
+  <div class="summary-table" *ngIf="!isLoading">
+    <table>
+      <thead>
+        <tr>
+          <th>Role</th>
+          <th>Record Count</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr (click)="navigateToAllItems('SenderMaker')" class="clickable-row">
+          <td>Sender Maker</td>
+          <td>{{ senderMakerCount }}</td>
+        </tr>
+        <tr (click)="navigateToAllItems('SenderChecker')" class="clickable-row">
+          <td>Sender Checker</td>
+          <td>{{ senderCheckerCount }}</td>
+        </tr>
+        <tr (click)="navigateToAllItems('ReceiverMaker')" class="clickable-row">
+          <td>Receiver Maker</td>
+          <td>{{ receiverMakerCount }}</td>
+        </tr>
+        <tr (click)="navigateToAllItems('ReceiverChecker')" class="clickable-row">
+          <td>Receiver Checker</td>
+          <td>{{ receiverCheckerCount }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 
 
 .summary-container {
-      padding: 20px;
-      }
-
-      .summary-cards {
-        display: flex;
-          flex-wrap: wrap;
-            gap: 20px;
-              margin-top: 20px;
-              }
-
-              .summary-card {
-                background: #fff;
-                  border: 1px solid #ddd;
-                    border-radius: 8px;
-                      padding: 24px;
-                        width: 200px;
-                          text-align: center;
-                            cursor: pointer;
-                              transition: box-shadow 0.2s;
-
-                                &:hover {
-                                    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                                      }
-
-                                        .card-title {
-                                            font-size: 14px;
-                                                font-weight: 600;
-                                                    color: #333;
-                                                        margin-bottom: 12px;
-                                                          }
-
-                                                            .card-count {
-                                                                font-size: 36px;
-                                                                    font-weight: 700;
-                                                                        color: #1a73e8;
-                                                                            margin-bottom: 4px;
-                                                                              }
-
-                                                                                .card-label {
-                                                                                    font-size: 12px;
-                                                                                        color: #888;
-                                                                                          }
-                                                                                          }
-
-                                                                                          .loading-overlay {
-                                                                                            text-align: center;
-                                                                                              padding: 40px;
-                                                                                                color: #666;
-                                                                                                }
-
-
-
-
-
-
+  padding: 20px;
 }
+
+.summary-table {
+  margin-top: 20px;
+  width: 400px;
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: inherit;
+    font-size: 14px;
+
+    thead tr {
+      background-color: #f0f4f8;
+
+      th {
+        padding: 12px 20px;
+        text-align: left;
+        font-weight: 600;
+        color: #333;
+        border: 1px solid #ddd;
+      }
+    }
+
+    tbody {
+      tr.clickable-row {
+        cursor: pointer;
+        transition: background-color 0.2s;
+
+        &:hover {
+          background-color: #e8f0fe;
+
+          td {
+            color: #1a73e8;
+            font-weight: 600;
+          }
+        }
+
+        td {
+          padding: 12px 20px;
+          border: 1px solid #ddd;
+          color: #444;
+
+          &:last-child {
+            text-align: center;
+            font-weight: 700;
+            font-size: 16px;
+            color: #1a73e8;
+          }
+        }
+      }
+    }
+  }
+}
+
+.loading-overlay {
+  text-align: center;
+  padding: 40px;
+  color: #666;
+}
+
+
+import { Component, OnInit } from '@angular/core';
+import { Router } from '@angular/router';
+import { SharePointService } from '../../services/sharepoint.service';
+import { OdataFilterBuilderService } from '../../services/odata-filter-builder.service';
+import { SearchFilters, EMPTY_FILTERS } from '../../models/search-filters.model';
+import { STATUS_TO_ROLE } from '../../models/workflow.model';
+
+@Component({
+  selector: 'app-summary-dashboard',
+  standalone: false,
+  templateUrl: './summary-dashboard.component.html',
+  styleUrls: ['./summary-dashboard.component.scss']
+})
+export class SummaryDashboardComponent implements OnInit {
+
+  isLoading = false;
+  pageTitle = 'Summary Dashboard';
+  filters: SearchFilters = { ...EMPTY_FILTERS };
+  isSearchActive = false;
+
+  senderMakerCount = 0;
+  senderCheckerCount = 0;
+  receiverMakerCount = 0;
+  receiverCheckerCount = 0;
+
+  constructor(
+    private spService: SharePointService,
+    private odataFilterBuilder: OdataFilterBuilderService,
+    private router: Router
+  ) {}
+
+  ngOnInit(): void {
+    this.loadCounts();
+  }
+
+  loadCounts(): void {
+    this.isLoading = true;
+    const advancedFilter = this.odataFilterBuilder.build(this.filters);
+
+    this.spService.getListItemsWithFilter(advancedFilter, '')
+      .subscribe({
+        next: (res: any) => {
+          const records = res.d.results || [];
+          this.senderMakerCount = records.filter((r: any) =>
+            STATUS_TO_ROLE[r.Status] === 'SenderMaker').length;
+          this.senderCheckerCount = records.filter((r: any) =>
+            STATUS_TO_ROLE[r.Status] === 'SenderChecker').length;
+          this.receiverMakerCount = records.filter((r: any) =>
+            STATUS_TO_ROLE[r.Status] === 'ReceiverMaker').length;
+          this.receiverCheckerCount = records.filter((r: any) =>
+            STATUS_TO_ROLE[r.Status] === 'ReceiverChecker').length;
+          this.isLoading = false;
+        },
+        error: (err) => {
+          console.error('Error loading counts:', err);
+          this.isLoading = false;
+        }
+      });
+  }
+
+  onSearched(filters: SearchFilters): void {
+    this.filters = filters;
+    this.isSearchActive = true;
+    this.loadCounts();
+  }
+
+  onResetted(): void {
+    this.filters = { ...EMPTY_FILTERS };
+    this.isSearchActive = false;
+    this.loadCounts();
+  }
+
+  navigateToAllItems(role: string): void {
+    this.router.navigate(['/all'], {
+      queryParams: {
+        role: role,
+        // Pass filters as JSON string only if search is active
+        filters: this.isSearchActive
+          ? JSON.stringify(this.filters)
+          : null
+      }
+    });
+  }
+
+  goHome(): void {
+    this.router.navigate(['/']);
+  }
+}
+
+ngOnInit(): void {
+  this.loadUserGroupsFromSP();
+  this.route.queryParams.pipe(take(1)).subscribe(params => {
+    if (params['role'] || params['filters']) {
+      // Parse advance search filters if passed
+      if (params['filters']) {
+        try {
+          this.filters = JSON.parse(params['filters']);
+        } catch (e) {}
+      }
+      // Apply role as status filter using STATUS_TO_ROLE
+      if (params['role']) {
+        const statuses = this.getStatusesForRole(params['role']);
+        if (statuses.length) {
+          this.filters = {
+            ...this.filters,
+            status: statuses[0]
+          };
+        }
+      }
+      this.isSearchActive = true;
+      this.loadRecords();
+    }
+  });
+}
+
+
+
+// FROM:
+AssignedToName: item.AssignedTo?.Title || '',
+SenderName: item.Sender?.Title || ''
+
+// TO:
+AssignedToName: item.AssignedTo?.LoginName?.split('\\').pop()?.trim() || '',
+SenderName: item.Sender?.LoginName?.split('\\').pop()?.trim() || ''
+
 
