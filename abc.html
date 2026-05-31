@@ -1,238 +1,294 @@
-<div class="app-nav-bar">
-  <span class="nav-home" (click)="goHome()">Home</span>
-  <span class="nav-sep">>></span>
-  <span class="nav-current">{{ pageTitle }}</span>
-</div>
-
-<app-advance-search
-  [siteContext]="'live'"
-  (searched)="onSearched($event)"
-  (resetted)="onResetted()">
-</app-advance-search>
-
-<div class="summary-container">
-  <div class="loading-overlay" *ngIf="isLoading">
-    Loading...
-  </div>
-
-  <div class="summary-table" *ngIf="!isLoading">
-    <table>
-      <thead>
-        <tr>
-          <th>Role</th>
-          <th>Record Count</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr (click)="navigateToAllItems('SenderMaker')" class="clickable-row">
-          <td>Sender Maker</td>
-          <td>{{ senderMakerCount }}</td>
-        </tr>
-        <tr (click)="navigateToAllItems('SenderChecker')" class="clickable-row">
-          <td>Sender Checker</td>
-          <td>{{ senderCheckerCount }}</td>
-        </tr>
-        <tr (click)="navigateToAllItems('ReceiverMaker')" class="clickable-row">
-          <td>Receiver Maker</td>
-          <td>{{ receiverMakerCount }}</td>
-        </tr>
-        <tr (click)="navigateToAllItems('ReceiverChecker')" class="clickable-row">
-          <td>Receiver Checker</td>
-          <td>{{ receiverCheckerCount }}</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-
-
-.summary-container {
-  padding: 20px;
-}
-
-.summary-table {
-  margin-top: 20px;
-  width: 400px;
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: inherit;
-    font-size: 14px;
-
-    thead tr {
-      background-color: #f0f4f8;
-
-      th {
-        padding: 12px 20px;
-        text-align: left;
-        font-weight: 600;
-        color: #333;
-        border: 1px solid #ddd;
-      }
-    }
-
-    tbody {
-      tr.clickable-row {
-        cursor: pointer;
-        transition: background-color 0.2s;
-
-        &:hover {
-          background-color: #e8f0fe;
-
-          td {
-            color: #1a73e8;
-            font-weight: 600;
-          }
-        }
-
-        td {
-          padding: 12px 20px;
-          border: 1px solid #ddd;
-          color: #444;
-
-          &:last-child {
-            text-align: center;
-            font-weight: 700;
-            font-size: 16px;
-            color: #1a73e8;
-          }
-        }
-      }
-    }
-  }
-}
-
-.loading-overlay {
-  text-align: center;
-  padding: 40px;
-  color: #666;
-}
-
-
-import { Component, OnInit } from '@angular/core';
-import { Router } from '@angular/router';
-import { SharePointService } from '../../services/sharepoint.service';
-import { OdataFilterBuilderService } from '../../services/odata-filter-builder.service';
-import { SearchFilters, EMPTY_FILTERS } from '../../models/search-filters.model';
-import { STATUS_TO_ROLE } from '../../models/workflow.model';
+import { Component, OnChanges, OnInit, OnDestroy, SimpleChanges } from '@angular/core';
+import { ActivatedRoute, Router } from '@angular/router';
+import { SharePointService } from '../../../../services/sharepoint.service';
+import { OdataFilterBuilderService } from '../../../../services/odata-filter-builder.service';
+import { SearchFilters, EMPTY_FILTERS } from '../../../../models/search-filters.model';
+import { UserService } from '../../../../services/user.service';
+import { Subject, takeUntil } from 'rxjs';
+import { GROUP_TO_ROLE_MAPPING, WorkflowRole } from '../../../../models/workflow.model';
 
 @Component({
-  selector: 'app-summary-dashboard',
+  selector: 'app-archive-all-items',
   standalone: false,
-  templateUrl: './summary-dashboard.component.html',
-  styleUrls: ['./summary-dashboard.component.scss']
+  templateUrl: './archive-all-items.component.html',
+  styleUrl: './archive-all-items.component.scss'
 })
-export class SummaryDashboardComponent implements OnInit {
+export class ArchiveAllItemsComponent implements OnInit, OnDestroy {
 
+  rowData: any[] = [];
   isLoading = false;
-  pageTitle = 'Summary Dashboard';
+  pageTitle: string = 'Archive';
   filters: SearchFilters = { ...EMPTY_FILTERS };
-  isSearchActive = false;
+  isLoadingMore: boolean = false;
+  nextPageUrl: string | null = null;
+  hasMoreRecords: boolean = false;
+  totalLoaded: number = 0;
+  isSearchActive: boolean = false;
 
-  senderMakerCount = 0;
-  senderCheckerCount = 0;
-  receiverMakerCount = 0;
-  receiverCheckerCount = 0;
+  userRoles: string[] = [];
+  mappedRoles: WorkflowRole[] = [];
+  primaryRole: WorkflowRole | '' = '';
+
+  private destroy$ = new Subject<void>();
+
+  columnDefs = [
+    {
+      headerName: 'Workflow ID', field: 'NovusWorkflowID', width: 180,
+      pinned: 'left', headerTooltip: 'Novus Workflow ID',
+      cellRenderer: (params: any) => {
+        const wfId = params.value || '';
+        return `<span>${wfId}</span>`;
+      }
+    },
+    {
+      headerName: '', field: 'Status', width: 90,
+      headerTooltip: 'Urgent/ Send Back/ Throwback',
+      cellRenderer: (params: any) => {
+        const icons: string[] = [];
+        // Archive uses UrgentFlag, SendBack, Throwback columns
+        if (params.data.UrgentFlag === 'Yes') {
+          icons.push('<i class="pi pi-exclamation-circle" title="Urgent"></i>');
+        }
+        if (params.data.SendBack === 'Yes') {
+          icons.push('<i class="pi pi-caret-left" title="SendBack"></i>');
+        }
+        if (params.data.Throwback === 'Yes') {
+          icons.push('<i class="pi pi-backward" title="Throwback"></i>');
+        }
+        return icons.join(' ');
+      }
+    },
+    { headerName: 'Product', field: 'Product', width: 120, headerTooltip: 'Product Type' },
+    { headerName: 'Customer Name', field: 'CustomerName', width: 160, headerTooltip: 'Customer Name' },
+    { headerName: 'Customer Account', field: 'CustomerAccount', width: 160, headerTooltip: 'Customer Account' },
+    { headerName: 'Transaction CCY', field: 'TransactionCCY', width: 130, headerTooltip: 'Transaction Currency' },
+    { headerName: 'Transaction Amount', field: 'TransactionAmount', width: 160, headerTooltip: 'Transaction Amount' },
+    { headerName: 'Counter', field: 'Counter', width: 100, headerTooltip: 'Counter' },
+    {
+      headerName: 'Execution Date', field: 'ExecutionDate', width: 140,
+      headerTooltip: 'Execution Date (dd/MM/yyyy)',
+      valueFormatter: (params: any) => {
+        if (!params.value) return '';
+        const date = new Date(params.value);
+        if (isNaN(date.getTime())) return params.value;
+        const dd = String(date.getDate()).padStart(2, '0');
+        const mm = String(date.getMonth() + 1).padStart(2, '0');
+        const yyyy = date.getFullYear();
+        return `${dd}/${mm}/${yyyy}`;
+      },
+      tooltipValueGetter: (params: any) => {
+        if (!params.value) return '';
+        const date = new Date(params.value);
+        if (isNaN(date.getTime())) return '';
+        const dd = String(date.getDate()).padStart(2, '0');
+        const mm = String(date.getMonth() + 1).padStart(2, '0');
+        const yyyy = date.getFullYear();
+        return `${dd}/${mm}/${yyyy}`;
+      }
+    },
+    { headerName: 'Business Type', field: 'BusinessType', width: 140, headerTooltip: 'Business Type' },
+    { headerName: 'BR Ref No', field: 'BRRefNo', width: 120, headerTooltip: 'BR Reference Number' },
+    { headerName: 'Source', field: 'Source', width: 120, headerTooltip: 'Source' },
+    { headerName: 'Source Number', field: 'SourceNumber', width: 140, headerTooltip: 'Source Number' },
+    { headerName: 'Status', field: 'Status', width: 200, headerTooltip: 'Current Status of the Record' },
+    { headerName: 'Locked By', field: 'AssignedToName', width: 150, headerTooltip: 'Locked By' },
+    { headerName: 'Sender', field: 'SenderName', width: 150, headerTooltip: 'Sender Name' },
+  ];
 
   constructor(
     private spService: SharePointService,
-    private odataFilterBuilder: OdataFilterBuilderService,
-    private router: Router
-  ) {}
+    private userService: UserService,
+    private router: Router,
+    private route: ActivatedRoute,
+    private filterBuilder: OdataFilterBuilderService
+  ) { }
 
   ngOnInit(): void {
-    this.loadCounts();
+    this.loadUserGroupsFromSP();
+    this.loadRecords();
   }
 
-  loadCounts(): void {
-    this.isLoading = true;
-    const advancedFilter = this.odataFilterBuilder.build(this.filters);
+  loadUserGroupsFromSP(): void {
+    this.userRoles = this.userService.userGroups || [];
+    this.mappedRoles = this.userRoles.map(g => GROUP_TO_ROLE_MAPPING[g])
+      .filter(role => !!role);
+    this.primaryRole = this.mappedRoles[0] || '';
+  }
 
-    this.spService.getListItemsWithFilter(advancedFilter, '')
+  loadRecords(): void {
+    this.isLoading = true;
+    this.rowData = [];
+    this.nextPageUrl = null;
+    this.totalLoaded = 0;
+
+    this.spService.resolveUserIdsForFilters(this.filters).then(resolved => {
+      // Pass 'archive' context so filterBuilder knows
+      // archive uses SendBack/Throwback not IsSendBack/IsThrowBack
+      const filterQuery = this.filterBuilder.build(resolved, 'archive');
+      console.log('Archive Filter Query:', filterQuery);
+
+      this.spService.getArchiveListItems(filterQuery).toPromise()
+        .then((res: any) => {
+          const items = res.d.results.map((item: any) => ({
+            ...item,
+            AssignedToName: item.AssignedTo?.Name?.split('\\').pop()?.trim() || '',
+            SenderName: item.Sender?.Name?.split('\\').pop()?.trim() || '',
+          }));
+          this.rowData = items;
+          this.totalLoaded = items.length;
+          this.nextPageUrl = res.d.__next || null;
+          this.hasMoreRecords = !!this.nextPageUrl;
+          this.isLoading = false;
+        })
+        .catch((err: any) => {
+          console.error('Error loading archive records:', err);
+          this.isLoading = false;
+        });
+    });
+  }
+
+  loadMore(): void {
+    if (!this.nextPageUrl || this.isLoadingMore) return;
+    this.isLoadingMore = true;
+
+    this.spService.getArchiveListItems(undefined, this.nextPageUrl)
+      .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (res: any) => {
-          const records = res.d.results || [];
-          this.senderMakerCount = records.filter((r: any) =>
-            STATUS_TO_ROLE[r.Status] === 'SenderMaker').length;
-          this.senderCheckerCount = records.filter((r: any) =>
-            STATUS_TO_ROLE[r.Status] === 'SenderChecker').length;
-          this.receiverMakerCount = records.filter((r: any) =>
-            STATUS_TO_ROLE[r.Status] === 'ReceiverMaker').length;
-          this.receiverCheckerCount = records.filter((r: any) =>
-            STATUS_TO_ROLE[r.Status] === 'ReceiverChecker').length;
-          this.isLoading = false;
+          const items = res.d.results.map((item: any) => ({
+            ...item,
+            AssignedToName: item.AssignedTo?.Name?.split('\\').pop()?.trim() || '',
+            SenderName: item.Sender?.Name?.split('\\').pop()?.trim() || '',
+          }));
+          this.rowData = [...this.rowData, ...items];
+          this.totalLoaded = this.rowData.length;
+          this.nextPageUrl = res.d.__next || null;
+          this.hasMoreRecords = !!this.nextPageUrl;
+          this.isLoadingMore = false;
         },
         error: (err) => {
-          console.error('Error loading counts:', err);
-          this.isLoading = false;
+          console.error('Error loading more archive records:', err);
+          this.isLoadingMore = false;
         }
       });
   }
 
+  onRowClicked(record: any): void {
+    console.log('Archive record clicked:', record);
+    // Use LiveNovusID to open the live record in view mode
+    const id = record.LiveNovusID;
+    if (!id) {
+      console.warn('No LiveNovusID found for this archive record');
+      return;
+    }
+    this.router.navigate(['/novus-record'], {
+      queryParams: {
+        id: id,
+        mode: 'view',
+        source: 'archive'
+      }
+    });
+  }
+
+  goHome(): void { this.router.navigate(['/']); }
+
   onSearched(filters: SearchFilters): void {
     this.filters = filters;
     this.isSearchActive = true;
-    this.loadCounts();
+    this.loadRecords();
   }
 
   onResetted(): void {
     this.filters = { ...EMPTY_FILTERS };
     this.isSearchActive = false;
-    this.loadCounts();
+    this.loadRecords();
   }
 
-  navigateToAllItems(role: string): void {
-    this.router.navigate(['/all'], {
-      queryParams: {
-        role: role,
-        // Pass filters as JSON string only if search is active
-        filters: this.isSearchActive
-          ? JSON.stringify(this.filters)
-          : null
-      }
-    });
+  onCellClicked(event: any): void {
+    this.onRowClicked(event.data);
   }
 
-  goHome(): void {
-    this.router.navigate(['/']);
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 }
 
-ngOnInit(): void {
-  this.loadUserGroupsFromSP();
-  this.route.queryParams.pipe(take(1)).subscribe(params => {
-    if (params['role'] || params['filters']) {
-      // Parse advance search filters if passed
-      if (params['filters']) {
-        try {
-          this.filters = JSON.parse(params['filters']);
-        } catch (e) {}
-      }
-      // Apply role as status filter using STATUS_TO_ROLE
-      if (params['role']) {
-        const statuses = this.getStatusesForRole(params['role']);
-        if (statuses.length) {
-          this.filters = {
-            ...this.filters,
-            status: statuses[0]
-          };
-        }
-      }
-      this.isSearchActive = true;
-      this.loadRecords();
-    }
-  });
+
+build(filters: any, context: 'live' | 'archive' = 'live'): string {
+  const conditions: string[] = [];
+
+  // Status
+  if (filters.status) {
+    conditions.push(`Status eq '${filters.status}'`);
+  }
+
+  // Sender (people picker — spId resolved)
+  if (filters.sender?.spId) {
+    conditions.push(`Sender/Id eq ${filters.sender.spId}`);
+  }
+
+  // AssignedTo (people picker — spId resolved)
+  if (filters.assignedTo?.spId) {
+    conditions.push(`AssignedTo/Id eq ${filters.assignedTo.spId}`);
+  }
+
+  // CreatedBy (people picker — spId resolved)
+  if (filters.createdBy?.spId) {
+    conditions.push(`Author/Id eq ${filters.createdBy.spId}`);
+  }
+
+  // ModifiedBy (people picker — spId resolved)
+  if (filters.modifiedBy?.spId) {
+    conditions.push(`Editor/Id eq ${filters.modifiedBy.spId}`);
+  }
+
+  // Product
+  if (filters.product) {
+    conditions.push(`Product eq '${filters.product}'`);
+  }
+
+  // Source
+  if (filters.source) {
+    conditions.push(`Source eq '${filters.source}'`);
+  }
+
+  // BusinessType
+  if (filters.businessType) {
+    conditions.push(`BusinessType eq '${filters.businessType}'`);
+  }
+
+  // Counter
+  if (filters.counter) {
+    conditions.push(`Counter eq '${filters.counter}'`);
+  }
+
+  // BRRefNo
+  if (filters.brRefNo) {
+    conditions.push(`BRRefNo eq '${filters.brRefNo}'`);
+  }
+
+  // UrgentFlag
+  if (filters.urgentFlag) {
+    conditions.push(`UrgentFlag eq '${filters.urgentFlag}'`);
+  }
+
+  // Throwback — column name differs between live and archive
+  if (filters.throwback) {
+    const throwbackCol = context === 'archive' ? 'Throwback' : 'IsThrowBack';
+    conditions.push(`${throwbackCol} eq '${filters.throwback}'`);
+  }
+
+  // SendBack — column name differs between live and archive
+  if (filters.sendBack) {
+    const sendBackCol = context === 'archive' ? 'SendBack' : 'IsSendBack';
+    conditions.push(`${sendBackCol} eq '${filters.sendBack}'`);
+  }
+
+  // IsMoved — only for live
+  if (context === 'live') {
+    conditions.push(`IsMoved ne 'Yes'`);
+  }
+
+  return conditions.join(' and ');
 }
-
-
-
-// FROM:
-AssignedToName: item.AssignedTo?.Title || '',
-SenderName: item.Sender?.Title || ''
-
-// TO:
-AssignedToName: item.AssignedTo?.LoginName?.split('\\').pop()?.trim() || '',
-SenderName: item.Sender?.LoginName?.split('\\').pop()?.trim() || ''
-
-
