@@ -1,294 +1,598 @@
-import { Component, OnChanges, OnInit, OnDestroy, SimpleChanges } from '@angular/core';
-import { ActivatedRoute, Router } from '@angular/router';
-import { SharePointService } from '../../../../services/sharepoint.service';
-import { OdataFilterBuilderService } from '../../../../services/odata-filter-builder.service';
-import { SearchFilters, EMPTY_FILTERS } from '../../../../models/search-filters.model';
-import { UserService } from '../../../../services/user.service';
-import { Subject, takeUntil } from 'rxjs';
-import { GROUP_TO_ROLE_MAPPING, WorkflowRole } from '../../../../models/workflow.model';
+// Comments
+pendingComment: string = '';
+commentSaved: boolean = false;
+showAddCommentModal: boolean = false;
+showViewCommentsModal: boolean = false;
+parsedComments: { role: string; actionTag: string; addedBy: string; addedOn: string; comment: string }[] = [];
+addCommentWarning: boolean = false;
 
-@Component({
-  selector: 'app-archive-all-items',
-  standalone: false,
-  templateUrl: './archive-all-items.component.html',
-  styleUrl: './archive-all-items.component.scss'
-})
-export class ArchiveAllItemsComponent implements OnInit, OnDestroy {
 
-  rowData: any[] = [];
-  isLoading = false;
-  pageTitle: string = 'Archive';
-  filters: SearchFilters = { ...EMPTY_FILTERS };
-  isLoadingMore: boolean = false;
-  nextPageUrl: string | null = null;
-  hasMoreRecords: boolean = false;
-  totalLoaded: number = 0;
-  isSearchActive: boolean = false;
 
-  userRoles: string[] = [];
-  mappedRoles: WorkflowRole[] = [];
-  primaryRole: WorkflowRole | '' = '';
 
-  private destroy$ = new Subject<void>();
 
-  columnDefs = [
-    {
-      headerName: 'Workflow ID', field: 'NovusWorkflowID', width: 180,
-      pinned: 'left', headerTooltip: 'Novus Workflow ID',
-      cellRenderer: (params: any) => {
-        const wfId = params.value || '';
-        return `<span>${wfId}</span>`;
-      }
-    },
-    {
-      headerName: '', field: 'Status', width: 90,
-      headerTooltip: 'Urgent/ Send Back/ Throwback',
-      cellRenderer: (params: any) => {
-        const icons: string[] = [];
-        // Archive uses UrgentFlag, SendBack, Throwback columns
-        if (params.data.UrgentFlag === 'Yes') {
-          icons.push('<i class="pi pi-exclamation-circle" title="Urgent"></i>');
-        }
-        if (params.data.SendBack === 'Yes') {
-          icons.push('<i class="pi pi-caret-left" title="SendBack"></i>');
-        }
-        if (params.data.Throwback === 'Yes') {
-          icons.push('<i class="pi pi-backward" title="Throwback"></i>');
-        }
-        return icons.join(' ');
-      }
-    },
-    { headerName: 'Product', field: 'Product', width: 120, headerTooltip: 'Product Type' },
-    { headerName: 'Customer Name', field: 'CustomerName', width: 160, headerTooltip: 'Customer Name' },
-    { headerName: 'Customer Account', field: 'CustomerAccount', width: 160, headerTooltip: 'Customer Account' },
-    { headerName: 'Transaction CCY', field: 'TransactionCCY', width: 130, headerTooltip: 'Transaction Currency' },
-    { headerName: 'Transaction Amount', field: 'TransactionAmount', width: 160, headerTooltip: 'Transaction Amount' },
-    { headerName: 'Counter', field: 'Counter', width: 100, headerTooltip: 'Counter' },
-    {
-      headerName: 'Execution Date', field: 'ExecutionDate', width: 140,
-      headerTooltip: 'Execution Date (dd/MM/yyyy)',
-      valueFormatter: (params: any) => {
-        if (!params.value) return '';
-        const date = new Date(params.value);
-        if (isNaN(date.getTime())) return params.value;
-        const dd = String(date.getDate()).padStart(2, '0');
-        const mm = String(date.getMonth() + 1).padStart(2, '0');
-        const yyyy = date.getFullYear();
-        return `${dd}/${mm}/${yyyy}`;
-      },
-      tooltipValueGetter: (params: any) => {
-        if (!params.value) return '';
-        const date = new Date(params.value);
-        if (isNaN(date.getTime())) return '';
-        const dd = String(date.getDate()).padStart(2, '0');
-        const mm = String(date.getMonth() + 1).padStart(2, '0');
-        const yyyy = date.getFullYear();
-        return `${dd}/${mm}/${yyyy}`;
-      }
-    },
-    { headerName: 'Business Type', field: 'BusinessType', width: 140, headerTooltip: 'Business Type' },
-    { headerName: 'BR Ref No', field: 'BRRefNo', width: 120, headerTooltip: 'BR Reference Number' },
-    { headerName: 'Source', field: 'Source', width: 120, headerTooltip: 'Source' },
-    { headerName: 'Source Number', field: 'SourceNumber', width: 140, headerTooltip: 'Source Number' },
-    { headerName: 'Status', field: 'Status', width: 200, headerTooltip: 'Current Status of the Record' },
-    { headerName: 'Locked By', field: 'AssignedToName', width: 150, headerTooltip: 'Locked By' },
-    { headerName: 'Sender', field: 'SenderName', width: 150, headerTooltip: 'Sender Name' },
-  ];
 
-  constructor(
-    private spService: SharePointService,
-    private userService: UserService,
-    private router: Router,
-    private route: ActivatedRoute,
-    private filterBuilder: OdataFilterBuilderService
-  ) { }
 
-  ngOnInit(): void {
-    this.loadUserGroupsFromSP();
-    this.loadRecords();
+
+private getCommentActionTag(action: string): string {
+  const role = this.getRoleFromUserGroup();
+  const effectiveRole = this.resolveEffectiveRoleForComment();
+  const map: Record<string, Record<string, string>> = {
+    SenderMaker:   { submit: 'SM_Remark' },
+    SenderChecker: { approve: 'SC_Remark', sendback: 'SC_Sendback' },
+    ReceiverMaker: { submit: 'RM_Remark', approve: 'RM_Remark', throwback: 'RM_Throwback' },
+    ReceiverChecker: { approve: 'RC_Remark', sendback: 'RC_Sendback' },
+  };
+  return map[effectiveRole]?.[action] ?? `${effectiveRole}_${action}`;
+}
+
+private resolveEffectiveRoleForComment(): string {
+  const role = this.getRoleFromUserGroup();
+  const status = this.LoadedRecord?.Status || '';
+  if (role === 'SenderMakerChecker') {
+    return STATUS_TO_ROLE[status] === 'SenderChecker' ? 'SenderChecker' : 'SenderMaker';
   }
-
-  loadUserGroupsFromSP(): void {
-    this.userRoles = this.userService.userGroups || [];
-    this.mappedRoles = this.userRoles.map(g => GROUP_TO_ROLE_MAPPING[g])
-      .filter(role => !!role);
-    this.primaryRole = this.mappedRoles[0] || '';
+  if (role === 'ReceiverMakerChecker') {
+    return STATUS_TO_ROLE[status] === 'ReceiverChecker' ? 'ReceiverChecker' : 'ReceiverMaker';
   }
+  return role || 'Unknown';
+}
 
-  loadRecords(): void {
-    this.isLoading = true;
-    this.rowData = [];
-    this.nextPageUrl = null;
-    this.totalLoaded = 0;
+parseComments(raw: string): { role: string; actionTag: string; addedBy: string; addedOn: string; comment: string }[] {
+  if (!raw || raw.trim() === '') return [];
+  return raw.split('||').map(entry => {
+    const parts = entry.trim().split(';');
+    return {
+      role:      parts[0]?.trim() || '',
+      actionTag: parts[1]?.trim() || '',
+      addedBy:   parts[2]?.trim() || '',
+      addedOn:   parts[3]?.trim() || '',
+      comment:   parts[4]?.trim() || '',
+    };
+  });
+}
 
-    this.spService.resolveUserIdsForFilters(this.filters).then(resolved => {
-      // Pass 'archive' context so filterBuilder knows
-      // archive uses SendBack/Throwback not IsSendBack/IsThrowBack
-      const filterQuery = this.filterBuilder.build(resolved, 'archive');
-      console.log('Archive Filter Query:', filterQuery);
+openAddCommentModal(warning: boolean = false): void {
+  this.addCommentWarning = warning;
+  this.showAddCommentModal = true;
+  document.body.style.overflow = 'hidden';
+}
 
-      this.spService.getArchiveListItems(filterQuery).toPromise()
-        .then((res: any) => {
-          const items = res.d.results.map((item: any) => ({
-            ...item,
-            AssignedToName: item.AssignedTo?.Name?.split('\\').pop()?.trim() || '',
-            SenderName: item.Sender?.Name?.split('\\').pop()?.trim() || '',
-          }));
-          this.rowData = items;
-          this.totalLoaded = items.length;
-          this.nextPageUrl = res.d.__next || null;
-          this.hasMoreRecords = !!this.nextPageUrl;
-          this.isLoading = false;
-        })
-        .catch((err: any) => {
-          console.error('Error loading archive records:', err);
-          this.isLoading = false;
-        });
-    });
-  }
+saveComment(): void {
+  if (!this.pendingComment.trim()) return;
+  this.commentSaved = true;
+  this.showAddCommentModal = false;
+  document.body.style.overflow = '';
+}
 
-  loadMore(): void {
-    if (!this.nextPageUrl || this.isLoadingMore) return;
-    this.isLoadingMore = true;
+cancelComment(): void {
+  this.pendingComment = '';
+  this.commentSaved = false;
+  this.showAddCommentModal = false;
+  this.addCommentWarning = false;
+  document.body.style.overflow = '';
+}
 
-    this.spService.getArchiveListItems(undefined, this.nextPageUrl)
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: (res: any) => {
-          const items = res.d.results.map((item: any) => ({
-            ...item,
-            AssignedToName: item.AssignedTo?.Name?.split('\\').pop()?.trim() || '',
-            SenderName: item.Sender?.Name?.split('\\').pop()?.trim() || '',
-          }));
-          this.rowData = [...this.rowData, ...items];
-          this.totalLoaded = this.rowData.length;
-          this.nextPageUrl = res.d.__next || null;
-          this.hasMoreRecords = !!this.nextPageUrl;
-          this.isLoadingMore = false;
-        },
-        error: (err) => {
-          console.error('Error loading more archive records:', err);
-          this.isLoadingMore = false;
-        }
-      });
-  }
+openViewCommentsModal(): void {
+  this.parsedComments = this.parseComments(this.LoadedRecord?.Comments || '');
+  this.showViewCommentsModal = true;
+  document.body.style.overflow = 'hidden';
+}
 
-  onRowClicked(record: any): void {
-    console.log('Archive record clicked:', record);
-    // Use LiveNovusID to open the live record in view mode
-    const id = record.LiveNovusID;
-    if (!id) {
-      console.warn('No LiveNovusID found for this archive record');
-      return;
-    }
-    this.router.navigate(['/novus-record'], {
-      queryParams: {
-        id: id,
-        mode: 'view',
-        source: 'archive'
-      }
-    });
-  }
-
-  goHome(): void { this.router.navigate(['/']); }
-
-  onSearched(filters: SearchFilters): void {
-    this.filters = filters;
-    this.isSearchActive = true;
-    this.loadRecords();
-  }
-
-  onResetted(): void {
-    this.filters = { ...EMPTY_FILTERS };
-    this.isSearchActive = false;
-    this.loadRecords();
-  }
-
-  onCellClicked(event: any): void {
-    this.onRowClicked(event.data);
-  }
-
-  ngOnDestroy(): void {
-    this.destroy$.next();
-    this.destroy$.complete();
-  }
+closeViewCommentsModal(): void {
+  this.showViewCommentsModal = false;
+  document.body.style.overflow = '';
 }
 
 
-build(filters: any, context: 'live' | 'archive' = 'live'): string {
-  const conditions: string[] = [];
 
-  // Status
-  if (filters.status) {
-    conditions.push(`Status eq '${filters.status}'`);
+
+
+
+
+
+
+if(action === 'throwback' && !throwbackval) {
+  this.showToast("Throwback comments are required for this action",'error');
+  return;
+}
+if(action === 'sendback' && !sendbackval) {
+  this.showToast("Sendback comments are required for this action",'error');
+  return;
+}
+
+
+
+
+
+
+
+
+if ((action === 'throwback' || action === 'sendback') && !this.commentSaved) {
+  this.openAddCommentModal(true);
+  return;
+}
+
+
+
+
+
+
+
+// Build new comment entry if saved
+const commentEntry = this.commentSaved && this.pendingComment.trim()
+  ? (() => {
+      const effectiveRole = this.resolveEffectiveRoleForComment();
+      const actionTag = this.getCommentActionTag(action);
+      const addedBy = this.userService.uid || 'Unknown';
+      const addedOn = new Date().toLocaleString('en-GB', {
+        day: '2-digit', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: false
+      });
+      return `${effectiveRole};${actionTag};${addedBy};${addedOn};${this.pendingComment.trim()}`;
+    })()
+  : null;
+
+const existingComments = this.LoadedRecord?.Comments || '';
+const newComments = commentEntry
+  ? (existingComments ? `${existingComments}||${commentEntry}` : commentEntry)
+  : existingComments;
+
+
+
+
+
+
+
+Comments: newComments,
+// Remove: ThrowbackComments, SendBackComments, SenderRemarks, ReceiverRemarks
+
+
+
+
+
+
+
+
+
+
+<span class="section-title">Additional Information</span>
+
+
+
+
+
+
+
+
+<span class="section-title">Additional Information</span>
+<div class="comment-header-actions" (click)="$event.stopPropagation()">
+  <!-- View Comments -->
+  <button
+    type="button"
+    class="btn-comment-view"
+    [class.has-comments]="LoadedRecord?.Comments"
+    (click)="openViewCommentsModal()"
+    *ngIf="!isNewRecord">
+    <span class="comment-view-icon">💬</span>
+    View Comments
+    <span class="comment-count-badge" *ngIf="LoadedRecord?.Comments">
+      {{ parseComments(LoadedRecord.Comments).length }}
+    </span>
+  </button>
+
+  <!-- Add Comment -->
+  <button
+    type="button"
+    class="btn-comment-add"
+    (click)="openAddCommentModal(false)"
+    *ngIf="source !== 'all-items' && source !== 'upcoming' && !permissions?.isReadOnly && !isSuperAdmin">
+    <span *ngIf="!commentSaved">+ Add Comment</span>
+    <span *ngIf="commentSaved" class="comment-saved-indicator">✓ Comment Added</span>
+  </button>
+</div>
+
+
+
+
+
+
+
+
+
+
+<!-- Add Comment Modal -->
+<div class="modal-backdrop comment-modal-backdrop"
+     *ngIf="showAddCommentModal"
+     (click)="cancelComment()">
+  <div class="modal-box comment-modal-box" (click)="$event.stopPropagation()">
+    <div class="comment-modal-header">
+      <span class="comment-modal-title">Add Comment</span>
+      <button type="button" class="modal-close-btn" (click)="cancelComment()">✕</button>
+    </div>
+
+    <div class="comment-warning" *ngIf="addCommentWarning">
+      <span class="warning-icon">⚠️</span>
+      Comment is mandatory for this action.
+    </div>
+
+    <div class="comment-modal-body">
+      <textarea
+        class="comment-textarea"
+        [(ngModel)]="pendingComment"
+        placeholder="Enter your comment here..."
+        rows="5">
+      </textarea>
+    </div>
+
+    <div class="comment-modal-footer">
+      <button type="button" class="btn btn-secondary" (click)="cancelComment()">Cancel</button>
+      <button type="button" class="btn btn-bnpp-green"
+              [disabled]="!pendingComment.trim()"
+              (click)="saveComment()">
+        Save Comment
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- View Comments Modal -->
+<div class="modal-backdrop comment-modal-backdrop"
+     *ngIf="showViewCommentsModal"
+     (click)="closeViewCommentsModal()">
+  <div class="modal-box view-comments-modal-box" (click)="$event.stopPropagation()">
+    <div class="comment-modal-header">
+      <span class="comment-modal-title">
+        💬 Comments
+        <span class="comment-count-badge-lg">{{ parsedComments.length }}</span>
+      </span>
+      <button type="button" class="modal-close-btn" (click)="closeViewCommentsModal()">✕</button>
+    </div>
+
+    <div class="comment-modal-body">
+      <div *ngIf="parsedComments.length === 0" class="no-comments-msg">
+        No comments yet.
+      </div>
+      <app-ag-grid-table
+        *ngIf="parsedComments.length > 0"
+        class="ag-theme-alpine comments-table"
+        [rowData]="parsedComments"
+        [columnDefs]="commentColumnDefs"
+        [defaultColDef]="commentDefaultColDef"
+        [pagination]="false"
+        [domLayout]="'autoHeight'"
+        [suppressMovableColumns]="true"
+        [suppressCellFocus]="true">
+      </app-ag-grid-table>
+    </div>
+
+    <div class="comment-modal-footer">
+      <button type="button" class="btn btn-secondary"
+              (click)="closeViewCommentsModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+commentColumnDefs: ColDef[] = [
+  {
+    headerName: '#',
+    valueGetter: (p: any) => p.node.rowIndex + 1,
+    width: 50, suppressSizeToFit: true, sortable: false, filter: false
+  },
+  { headerName: 'Role', field: 'role', flex: 1.5, minWidth: 130, tooltipField: 'role' },
+  { headerName: 'Action', field: 'actionTag', flex: 1.5, minWidth: 150, tooltipField: 'actionTag' },
+  { headerName: 'Added By', field: 'addedBy', flex: 1.5, minWidth: 130, tooltipField: 'addedBy' },
+  { headerName: 'Added On', field: 'addedOn', flex: 1.5, minWidth: 150, tooltipField: 'addedOn' },
+  {
+    headerName: 'Comment', field: 'comment', flex: 3, minWidth: 200,
+    tooltipField: 'comment',
+    cellRenderer: (p: any) => `<span style="white-space:pre-wrap">${p.value}</span>`,
+    autoHeight: true
+  }
+];
+
+commentDefaultColDef = {
+  resizable: true, sortable: false, filter: false,
+  wrapHeaderText: true, autoHeaderHeight: true
+};
+
+
+
+
+
+
+
+
+
+
+
+
+// ── Comment Header Buttons ─────────────────────────────────
+.comment-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.btn-comment-view {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1.5px solid #ccc;
+  background: #f5f5f5;
+  color: #555;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &.has-comments {
+    border-color: #00965e;
+    background: linear-gradient(135deg, #e8f7f1, #d0f0e4);
+    color: #00693e;
+    font-weight: 600;
+    box-shadow: 0 2px 6px rgba(0, 150, 94, 0.25);
+
+    &:hover {
+      background: linear-gradient(135deg, #d0f0e4, #b8e8d4);
+      box-shadow: 0 3px 10px rgba(0, 150, 94, 0.35);
+      transform: translateY(-1px);
+    }
   }
 
-  // Sender (people picker — spId resolved)
-  if (filters.sender?.spId) {
-    conditions.push(`Sender/Id eq ${filters.sender.spId}`);
+  &:not(.has-comments):hover {
+    border-color: #aaa;
+    background: #eee;
+  }
+}
+
+.comment-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #00965e;
+  color: white;
+  border-radius: 50%;
+  min-width: 18px;
+  height: 18px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+}
+
+.comment-count-badge-lg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #00965e;
+  color: white;
+  border-radius: 12px;
+  min-width: 22px;
+  height: 22px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 6px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.btn-comment-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 14px;
+  border-radius: 20px;
+  border: 1.5px solid #00965e;
+  background: #00965e;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    background: #007a4c;
+    border-color: #007a4c;
+    box-shadow: 0 3px 8px rgba(0, 150, 94, 0.3);
+    transform: translateY(-1px);
   }
 
-  // AssignedTo (people picker — spId resolved)
-  if (filters.assignedTo?.spId) {
-    conditions.push(`AssignedTo/Id eq ${filters.assignedTo.spId}`);
+  .comment-saved-indicator {
+    color: #fff;
+  }
+}
+
+// ── Comment Modals ──────────────────────────────────────────
+.comment-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.comment-modal-box {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  width: 480px;
+  max-width: 95vw;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.view-comments-modal-box {
+  width: 820px;
+  max-width: 96vw;
+}
+
+.comment-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: linear-gradient(90deg, #00965e, #00b370);
+  color: white;
+
+  .comment-modal-title {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
-  // CreatedBy (people picker — spId resolved)
-  if (filters.createdBy?.spId) {
-    conditions.push(`Author/Id eq ${filters.createdBy.spId}`);
+  .modal-close-btn {
+    background: rgba(255,255,255,0.2);
+    border: none;
+    color: white;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+
+    &:hover {
+      background: rgba(255,255,255,0.35);
+    }
+  }
+}
+
+.comment-warning {
+  margin: 12px 20px 0;
+  padding: 10px 14px;
+  background: #fff8e1;
+  border-left: 4px solid #f0a500;
+  border-radius: 4px;
+  color: #7a5200;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  .warning-icon {
+    font-size: 16px;
+  }
+}
+
+.comment-modal-body {
+  padding: 16px 20px;
+
+  .comment-textarea {
+    width: 100%;
+    border: 1.5px solid #d0d0d0;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 100px;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
+
+    &:focus {
+      outline: none;
+      border-color: #00965e;
+      box-shadow: 0 0 0 3px rgba(0, 150, 94, 0.12);
+    }
+
+    &::placeholder {
+      color: #aaa;
+    }
   }
 
-  // ModifiedBy (people picker — spId resolved)
-  if (filters.modifiedBy?.spId) {
-    conditions.push(`Editor/Id eq ${filters.modifiedBy.spId}`);
+  .no-comments-msg {
+    text-align: center;
+    color: #aaa;
+    font-size: 14px;
+    padding: 30px 0;
+  }
+}
+
+.comment-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid #eee;
+  background: #fafafa;
+
+  .btn-bnpp-green {
+    background: #00965e;
+    color: white;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+
+    &:hover:not(:disabled) {
+      background: #007a4c;
+    }
+
+    &:disabled {
+      background: #b0d9c8;
+      cursor: not-allowed;
+    }
   }
 
-  // Product
-  if (filters.product) {
-    conditions.push(`Product eq '${filters.product}'`);
-  }
+  .btn-secondary {
+    background: white;
+    color: #555;
+    border: 1.5px solid #ddd;
+    padding: 8px 20px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
 
-  // Source
-  if (filters.source) {
-    conditions.push(`Source eq '${filters.source}'`);
+    &:hover {
+      border-color: #bbb;
+      background: #f5f5f5;
+    }
   }
+}
 
-  // BusinessType
-  if (filters.businessType) {
-    conditions.push(`BusinessType eq '${filters.businessType}'`);
-  }
+// ── Comments AG Grid ────────────────────────────────────────
+.comments-table {
+  width: 100%;
+  font-size: 13px;
+}
 
-  // Counter
-  if (filters.counter) {
-    conditions.push(`Counter eq '${filters.counter}'`);
-  }
 
-  // BRRefNo
-  if (filters.brRefNo) {
-    conditions.push(`BRRefNo eq '${filters.brRefNo}'`);
-  }
 
-  // UrgentFlag
-  if (filters.urgentFlag) {
-    conditions.push(`UrgentFlag eq '${filters.urgentFlag}'`);
-  }
 
-  // Throwback — column name differs between live and archive
-  if (filters.throwback) {
-    const throwbackCol = context === 'archive' ? 'Throwback' : 'IsThrowBack';
-    conditions.push(`${throwbackCol} eq '${filters.throwback}'`);
-  }
 
-  // SendBack — column name differs between live and archive
-  if (filters.sendBack) {
-    const sendBackCol = context === 'archive' ? 'SendBack' : 'IsSendBack';
-    conditions.push(`${sendBackCol} eq '${filters.sendBack}'`);
-  }
 
-  // IsMoved — only for live
-  if (context === 'live') {
-    conditions.push(`IsMoved ne 'Yes'`);
-  }
 
-  return conditions.join(' and ');
+.accordion-title {
+  // add if not already there:
+  display: flex;
+  align-items: center;
+  width: 100%;
 }
