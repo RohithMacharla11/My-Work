@@ -1,598 +1,186 @@
-// Comments
-pendingComment: string = '';
-commentSaved: boolean = false;
-showAddCommentModal: boolean = false;
-showViewCommentsModal: boolean = false;
-parsedComments: { role: string; actionTag: string; addedBy: string; addedOn: string; comment: string }[] = [];
-addCommentWarning: boolean = false;
-
-
-
-
-
-
-
-
-private getCommentActionTag(action: string): string {
-  const role = this.getRoleFromUserGroup();
-  const effectiveRole = this.resolveEffectiveRoleForComment();
-  const map: Record<string, Record<string, string>> = {
-    SenderMaker:   { submit: 'SM_Remark' },
-    SenderChecker: { approve: 'SC_Remark', sendback: 'SC_Sendback' },
-    ReceiverMaker: { submit: 'RM_Remark', approve: 'RM_Remark', throwback: 'RM_Throwback' },
-    ReceiverChecker: { approve: 'RC_Remark', sendback: 'RC_Sendback' },
-  };
-  return map[effectiveRole]?.[action] ?? `${effectiveRole}_${action}`;
-}
-
-private resolveEffectiveRoleForComment(): string {
-  const role = this.getRoleFromUserGroup();
-  const status = this.LoadedRecord?.Status || '';
-  if (role === 'SenderMakerChecker') {
-    return STATUS_TO_ROLE[status] === 'SenderChecker' ? 'SenderChecker' : 'SenderMaker';
+// Hidden action date columns - CSV only
+{
+  headerName: 'SM Submit Date',
+  field: 'SenderMakerSubmit',
+  hide: true,
+  suppressColumnsToolPanel: true,
+  valueFormatter: (params: any) => {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   }
-  if (role === 'ReceiverMakerChecker') {
-    return STATUS_TO_ROLE[status] === 'ReceiverChecker' ? 'ReceiverChecker' : 'ReceiverMaker';
+},
+{
+  headerName: 'SC Approve Initial Date',
+  field: 'SenderCheckerApproveInitial',
+  hide: true,
+  suppressColumnsToolPanel: true,
+  valueFormatter: (params: any) => {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   }
-  return role || 'Unknown';
-}
-
-parseComments(raw: string): { role: string; actionTag: string; addedBy: string; addedOn: string; comment: string }[] {
-  if (!raw || raw.trim() === '') return [];
-  return raw.split('||').map(entry => {
-    const parts = entry.trim().split(';');
-    return {
-      role:      parts[0]?.trim() || '',
-      actionTag: parts[1]?.trim() || '',
-      addedBy:   parts[2]?.trim() || '',
-      addedOn:   parts[3]?.trim() || '',
-      comment:   parts[4]?.trim() || '',
-    };
-  });
-}
-
-openAddCommentModal(warning: boolean = false): void {
-  this.addCommentWarning = warning;
-  this.showAddCommentModal = true;
-  document.body.style.overflow = 'hidden';
-}
-
-saveComment(): void {
-  if (!this.pendingComment.trim()) return;
-  this.commentSaved = true;
-  this.showAddCommentModal = false;
-  document.body.style.overflow = '';
-}
-
-cancelComment(): void {
-  this.pendingComment = '';
-  this.commentSaved = false;
-  this.showAddCommentModal = false;
-  this.addCommentWarning = false;
-  document.body.style.overflow = '';
-}
-
-openViewCommentsModal(): void {
-  this.parsedComments = this.parseComments(this.LoadedRecord?.Comments || '');
-  this.showViewCommentsModal = true;
-  document.body.style.overflow = 'hidden';
-}
-
-closeViewCommentsModal(): void {
-  this.showViewCommentsModal = false;
-  document.body.style.overflow = '';
-}
-
-
-
-
-
-
-
-
-
-if(action === 'throwback' && !throwbackval) {
-  this.showToast("Throwback comments are required for this action",'error');
-  return;
-}
-if(action === 'sendback' && !sendbackval) {
-  this.showToast("Sendback comments are required for this action",'error');
-  return;
-}
-
-
-
-
-
-
-
-
-if ((action === 'throwback' || action === 'sendback') && !this.commentSaved) {
-  this.openAddCommentModal(true);
-  return;
-}
-
-
-
-
-
-
-
-// Build new comment entry if saved
-const commentEntry = this.commentSaved && this.pendingComment.trim()
-  ? (() => {
-      const effectiveRole = this.resolveEffectiveRoleForComment();
-      const actionTag = this.getCommentActionTag(action);
-      const addedBy = this.userService.uid || 'Unknown';
-      const addedOn = new Date().toLocaleString('en-GB', {
-        day: '2-digit', month: 'short', year: 'numeric',
-        hour: '2-digit', minute: '2-digit', hour12: false
-      });
-      return `${effectiveRole};${actionTag};${addedBy};${addedOn};${this.pendingComment.trim()}`;
-    })()
-  : null;
-
-const existingComments = this.LoadedRecord?.Comments || '';
-const newComments = commentEntry
-  ? (existingComments ? `${existingComments}||${commentEntry}` : commentEntry)
-  : existingComments;
-
-
-
-
-
-
-
-Comments: newComments,
-// Remove: ThrowbackComments, SendBackComments, SenderRemarks, ReceiverRemarks
-
-
-
-
-
-
-
-
-
-
-<span class="section-title">Additional Information</span>
-
-
-
-
-
-
-
-
-<span class="section-title">Additional Information</span>
-<div class="comment-header-actions" (click)="$event.stopPropagation()">
-  <!-- View Comments -->
-  <button
-    type="button"
-    class="btn-comment-view"
-    [class.has-comments]="LoadedRecord?.Comments"
-    (click)="openViewCommentsModal()"
-    *ngIf="!isNewRecord">
-    <span class="comment-view-icon">💬</span>
-    View Comments
-    <span class="comment-count-badge" *ngIf="LoadedRecord?.Comments">
-      {{ parseComments(LoadedRecord.Comments).length }}
-    </span>
-  </button>
-
-  <!-- Add Comment -->
-  <button
-    type="button"
-    class="btn-comment-add"
-    (click)="openAddCommentModal(false)"
-    *ngIf="source !== 'all-items' && source !== 'upcoming' && !permissions?.isReadOnly && !isSuperAdmin">
-    <span *ngIf="!commentSaved">+ Add Comment</span>
-    <span *ngIf="commentSaved" class="comment-saved-indicator">✓ Comment Added</span>
-  </button>
-</div>
-
-
-
-
-
-
-
-
-
-
-<!-- Add Comment Modal -->
-<div class="modal-backdrop comment-modal-backdrop"
-     *ngIf="showAddCommentModal"
-     (click)="cancelComment()">
-  <div class="modal-box comment-modal-box" (click)="$event.stopPropagation()">
-    <div class="comment-modal-header">
-      <span class="comment-modal-title">Add Comment</span>
-      <button type="button" class="modal-close-btn" (click)="cancelComment()">✕</button>
-    </div>
-
-    <div class="comment-warning" *ngIf="addCommentWarning">
-      <span class="warning-icon">⚠️</span>
-      Comment is mandatory for this action.
-    </div>
-
-    <div class="comment-modal-body">
-      <textarea
-        class="comment-textarea"
-        [(ngModel)]="pendingComment"
-        placeholder="Enter your comment here..."
-        rows="5">
-      </textarea>
-    </div>
-
-    <div class="comment-modal-footer">
-      <button type="button" class="btn btn-secondary" (click)="cancelComment()">Cancel</button>
-      <button type="button" class="btn btn-bnpp-green"
-              [disabled]="!pendingComment.trim()"
-              (click)="saveComment()">
-        Save Comment
-      </button>
-    </div>
-  </div>
-</div>
-
-<!-- View Comments Modal -->
-<div class="modal-backdrop comment-modal-backdrop"
-     *ngIf="showViewCommentsModal"
-     (click)="closeViewCommentsModal()">
-  <div class="modal-box view-comments-modal-box" (click)="$event.stopPropagation()">
-    <div class="comment-modal-header">
-      <span class="comment-modal-title">
-        💬 Comments
-        <span class="comment-count-badge-lg">{{ parsedComments.length }}</span>
-      </span>
-      <button type="button" class="modal-close-btn" (click)="closeViewCommentsModal()">✕</button>
-    </div>
-
-    <div class="comment-modal-body">
-      <div *ngIf="parsedComments.length === 0" class="no-comments-msg">
-        No comments yet.
-      </div>
-      <app-ag-grid-table
-        *ngIf="parsedComments.length > 0"
-        class="ag-theme-alpine comments-table"
-        [rowData]="parsedComments"
-        [columnDefs]="commentColumnDefs"
-        [defaultColDef]="commentDefaultColDef"
-        [pagination]="false"
-        [domLayout]="'autoHeight'"
-        [suppressMovableColumns]="true"
-        [suppressCellFocus]="true">
-      </app-ag-grid-table>
-    </div>
-
-    <div class="comment-modal-footer">
-      <button type="button" class="btn btn-secondary"
-              (click)="closeViewCommentsModal()">Close</button>
-    </div>
-  </div>
-</div>
-
-
-
-
-
-
-
-
-
-
-
-
-commentColumnDefs: ColDef[] = [
-  {
-    headerName: '#',
-    valueGetter: (p: any) => p.node.rowIndex + 1,
-    width: 50, suppressSizeToFit: true, sortable: false, filter: false
-  },
-  { headerName: 'Role', field: 'role', flex: 1.5, minWidth: 130, tooltipField: 'role' },
-  { headerName: 'Action', field: 'actionTag', flex: 1.5, minWidth: 150, tooltipField: 'actionTag' },
-  { headerName: 'Added By', field: 'addedBy', flex: 1.5, minWidth: 130, tooltipField: 'addedBy' },
-  { headerName: 'Added On', field: 'addedOn', flex: 1.5, minWidth: 150, tooltipField: 'addedOn' },
-  {
-    headerName: 'Comment', field: 'comment', flex: 3, minWidth: 200,
-    tooltipField: 'comment',
-    cellRenderer: (p: any) => `<span style="white-space:pre-wrap">${p.value}</span>`,
-    autoHeight: true
+},
+{
+  headerName: 'SC Approve Latest Date',
+  field: 'SenderCheckerApproveLatest',
+  hide: true,
+  suppressColumnsToolPanel: true,
+  valueFormatter: (params: any) => {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   }
+},
+{
+  headerName: 'SC Reject Date',
+  field: 'SenderCheckerReject',
+  hide: true,
+  suppressColumnsToolPanel: true,
+  valueFormatter: (params: any) => {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  }
+},
+{
+  headerName: 'SC Sendback Date',
+  field: 'SenderCheckerSendback',
+  hide: true,
+  suppressColumnsToolPanel: true,
+  valueFormatter: (params: any) => {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  }
+},
+{
+  headerName: 'RM Throwback Date',
+  field: 'ReceiverMakerThrowback',
+  hide: true,
+  suppressColumnsToolPanel: true,
+  valueFormatter: (params: any) => {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  }
+},
+{
+  headerName: 'RM Approve Date',
+  field: 'ReceiverMakerApprove',
+  hide: true,
+  suppressColumnsToolPanel: true,
+  valueFormatter: (params: any) => {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  }
+},
+{
+  headerName: 'RC Approve Date',
+  field: 'ReceiverCheckerApprove',
+  hide: true,
+  suppressColumnsToolPanel: true,
+  valueFormatter: (params: any) => {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  }
+},
+{
+  headerName: 'RC Sendback Date',
+  field: 'ReceiverCheckerSendback',
+  hide: true,
+  suppressColumnsToolPanel: true,
+  valueFormatter: (params: any) => {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  }
+},
+
+
+
+
+allItemsExportKeys = [
+  'NovusWorkflowID',
+  'AssignedToId',
+  'IsSendBack',
+  'IsThrowBack',
+  'UrgentFlag',
+  'Product',
+  'CustomerName',
+  'CustomerAccount',
+  'TransactionCCY',
+  'TransactionAmount',
+  'Counter',
+  'ExecutionDate',
+  'BusinessType',
+  'BRRefNo',
+  'ReceiverReference',
+  'Source',
+  'SourceNumber',
+  'Status',
+  'AssignedToName',
+  'SenderName',
+  // Action date columns
+  'SenderMakerSubmit',
+  'SenderCheckerApproveInitial',
+  'SenderCheckerApproveLatest',
+  'SenderCheckerReject',
+  'SenderCheckerSendback',
+  'ReceiverMakerThrowback',
+  'ReceiverMakerApprove',
+  'ReceiverCheckerApprove',
+  'ReceiverCheckerSendback'
 ];
 
-commentDefaultColDef = {
-  resizable: true, sortable: false, filter: false,
-  wrapHeaderText: true, autoHeaderHeight: true
-};
 
 
 
 
+processCellCallback: (params: any) => {
+  const field = params.column.getColDef().field;
 
+  // Yes/No columns
+  if (field === 'AssignedToId') return params.value ? 'Yes' : 'No';
+  if (field === 'IsSendBack') return params.value === 'Yes' ? 'Yes' : 'No';
+  if (field === 'IsThrowBack') return params.value === 'Yes' ? 'Yes' : 'No';
+  if (field === 'UrgentFlag') return params.value === 'Yes' ? 'Yes' : 'No';
 
-
-
-
-
-
-
-// ── Comment Header Buttons ─────────────────────────────────
-.comment-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-
-.btn-comment-view {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border-radius: 20px;
-  border: 1.5px solid #ccc;
-  background: #f5f5f5;
-  color: #555;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-
-  &.has-comments {
-    border-color: #00965e;
-    background: linear-gradient(135deg, #e8f7f1, #d0f0e4);
-    color: #00693e;
-    font-weight: 600;
-    box-shadow: 0 2px 6px rgba(0, 150, 94, 0.25);
-
-    &:hover {
-      background: linear-gradient(135deg, #d0f0e4, #b8e8d4);
-      box-shadow: 0 3px 10px rgba(0, 150, 94, 0.35);
-      transform: translateY(-1px);
-    }
+  // Action date columns
+  const dateFields = [
+    'SenderMakerSubmit',
+    'SenderCheckerApproveInitial',
+    'SenderCheckerApproveLatest',
+    'SenderCheckerReject',
+    'SenderCheckerSendback',
+    'ReceiverMakerThrowback',
+    'ReceiverMakerApprove',
+    'ReceiverCheckerApprove',
+    'ReceiverCheckerSendback'
+  ];
+  if (dateFields.includes(field)) {
+    if (!params.value) return '';
+    const d = new Date(params.value);
+    if (isNaN(d.getTime())) return '';
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   }
 
-  &:not(.has-comments):hover {
-    border-color: #aaa;
-    background: #eee;
-  }
-}
-
-.comment-count-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: #00965e;
-  color: white;
-  border-radius: 50%;
-  min-width: 18px;
-  height: 18px;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 0 4px;
-}
-
-.comment-count-badge-lg {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: #00965e;
-  color: white;
-  border-radius: 12px;
-  min-width: 22px;
-  height: 22px;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 0 6px;
-  margin-left: 8px;
-  vertical-align: middle;
-}
-
-.btn-comment-add {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 14px;
-  border-radius: 20px;
-  border: 1.5px solid #00965e;
-  background: #00965e;
-  color: white;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-
-  &:hover {
-    background: #007a4c;
-    border-color: #007a4c;
-    box-shadow: 0 3px 8px rgba(0, 150, 94, 0.3);
-    transform: translateY(-1px);
+  // Use valueFormatter for other columns (e.g. ExecutionDate)
+  const formatter = params.column.getColDef().valueFormatter;
+  if (formatter && typeof formatter === 'function') {
+    return formatter(params) || '';
   }
 
-  .comment-saved-indicator {
-    color: #fff;
-  }
-}
-
-// ── Comment Modals ──────────────────────────────────────────
-.comment-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  z-index: 10000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.comment-modal-box {
-  background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-  width: 480px;
-  max-width: 95vw;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.view-comments-modal-box {
-  width: 820px;
-  max-width: 96vw;
-}
-
-.comment-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  background: linear-gradient(90deg, #00965e, #00b370);
-  color: white;
-
-  .comment-modal-title {
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.3px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .modal-close-btn {
-    background: rgba(255,255,255,0.2);
-    border: none;
-    color: white;
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    font-size: 14px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.2s;
-
-    &:hover {
-      background: rgba(255,255,255,0.35);
-    }
-  }
-}
-
-.comment-warning {
-  margin: 12px 20px 0;
-  padding: 10px 14px;
-  background: #fff8e1;
-  border-left: 4px solid #f0a500;
-  border-radius: 4px;
-  color: #7a5200;
-  font-size: 13px;
-  font-weight: 500;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-
-  .warning-icon {
-    font-size: 16px;
-  }
-}
-
-.comment-modal-body {
-  padding: 16px 20px;
-
-  .comment-textarea {
-    width: 100%;
-    border: 1.5px solid #d0d0d0;
-    border-radius: 6px;
-    padding: 10px 12px;
-    font-size: 13px;
-    font-family: inherit;
-    resize: vertical;
-    min-height: 100px;
-    transition: border-color 0.2s;
-    box-sizing: border-box;
-
-    &:focus {
-      outline: none;
-      border-color: #00965e;
-      box-shadow: 0 0 0 3px rgba(0, 150, 94, 0.12);
-    }
-
-    &::placeholder {
-      color: #aaa;
-    }
-  }
-
-  .no-comments-msg {
-    text-align: center;
-    color: #aaa;
-    font-size: 14px;
-    padding: 30px 0;
-  }
-}
-
-.comment-modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 12px 20px;
-  border-top: 1px solid #eee;
-  background: #fafafa;
-
-  .btn-bnpp-green {
-    background: #00965e;
-    color: white;
-    border: none;
-    padding: 8px 20px;
-    border-radius: 6px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.2s;
-
-    &:hover:not(:disabled) {
-      background: #007a4c;
-    }
-
-    &:disabled {
-      background: #b0d9c8;
-      cursor: not-allowed;
-    }
-  }
-
-  .btn-secondary {
-    background: white;
-    color: #555;
-    border: 1.5px solid #ddd;
-    padding: 8px 20px;
-    border-radius: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-
-    &:hover {
-      border-color: #bbb;
-      background: #f5f5f5;
-    }
-  }
-}
-
-// ── Comments AG Grid ────────────────────────────────────────
-.comments-table {
-  width: 100%;
-  font-size: 13px;
-}
-
-
-
-
-
-
-
-.accordion-title {
-  // add if not already there:
-  display: flex;
-  align-items: center;
-  width: 100%;
-}
+  return params.value || '';
+},
