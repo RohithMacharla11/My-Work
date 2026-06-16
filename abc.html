@@ -1,12 +1,161 @@
-.nav-role-badge {
-  margin-left: auto;
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
-  padding: 3px 12px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  white-space: nowrap;
+import { Component, Input } from '@angular/core';
+import { CommonModule } from '@angular/common';
+
+@Component({
+  selector: 'app-loading-overlay',
+  standalone: true,
+  imports: [CommonModule],
+  templateUrl: './loading-overlay.component.html',
+  styleUrls: ['./loading-overlay.component.scss']
+})
+export class LoadingOverlayComponent {
+  @Input() message: string = 'Loading...';
+  @Input() visible: boolean = false;
 }
+
+
+
+<div class="loading-overlay" *ngIf="visible">
+  <div class="loading-box">
+    <div class="bnpp-spinner">
+      <div class="spinner-ring"></div>
+      <div class="spinner-ring"></div>
+      <div class="spinner-ring"></div>
+    </div>
+    <p class="loading-message">{{ message }}</p>
+  </div>
+</div>
+
+
+
+$bnpp-green: #00965e;
+$bnpp-green-dark: #007a4c;
+
+.loading-overlay {
+  position: fixed;
+  top: 56px; // adjust to your navbar height (e.g. 56px or 64px)
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 1050; // above mat-dialog backdrops if needed, below navbar
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-box {
+  background: #ffffff;
+  border-radius: 10px;
+  padding: 36px 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  min-width: 200px;
+}
+
+.bnpp-spinner {
+  position: relative;
+  width: 56px;
+  height: 56px;
+
+  .spinner-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 3px solid transparent;
+    animation: spin 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+
+    &:nth-child(1) {
+      border-top-color: $bnpp-green;
+      animation-delay: -0.45s;
+    }
+    &:nth-child(2) {
+      border-top-color: $bnpp-green-dark;
+      animation-delay: -0.3s;
+      inset: 8px;
+    }
+    &:nth-child(3) {
+      border-top-color: lighten($bnpp-green, 20%);
+      animation-delay: -0.15s;
+      inset: 16px;
+    }
+  }
+}
+
+@keyframes spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.loading-message {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+  letter-spacing: 0.3px;
+}
+
+
+<app-loading-overlay 
+  [visible]="isLoading" 
+  [message]="loadingMessage">
+</app-loading-overlay>
+
+<!-- rest of your form -->
+
+
+
+
+
+import { LoadingOverlayComponent } from '../loading-overlay/loading-overlay.component';
+
+// In @Component imports array:
+// imports: [..., LoadingOverlayComponent]
+
+// Properties:
+isLoading = false;
+loadingMessage = 'Loading...';
+
+// Helper method:
+private setLoading(state: boolean, message = 'Loading...') {
+  this.isLoading = state;
+  this.loadingMessage = message;
+}
+
+
+
+// On init / fetching record
+async ngOnInit() {
+  this.setLoading(true, 'Fetching record...');
+  try {
+    await this.loadFormData();
+  } finally {
+    this.setLoading(false);
+  }
+}
+
+// On submit / approve / throwback etc.
+async onSubmit() {
+  this.setLoading(true, 'Submitting request...');
+  try {
+    await this.submitRecord();
+  } finally {
+    this.setLoading(false);
+  }
+}
+
+async onApprove() {
+  this.setLoading(true, 'Processing approval...');
+  try {
+    await this.approveRecord();
+  } finally {
+    this.setLoading(false);
+  }
+}
+
+
+
