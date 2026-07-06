@@ -1,4 +1,63 @@
-<label *ngFor="let key of ['Locked','Urgent','SendBack','Throwback']">
-  <input type="checkbox" [(ngModel)]="statusFilters[key]" (change)="gridApi?.onFilterChanged()">
-  {{ key }}
-</label>
+<!-- PDF -->
+<div *ngIf="pdfUrl">
+    <ngx-extended-pdf-viewer
+        [src]="pdfUrl"
+        [showToolbar]="false"
+        [showSidebarButton]="false"
+        [showFindButton]="false"
+        [showOpenFileButton]="false"
+        [showPrintButton]="false"
+        [showDownloadButton]="false"
+        height="100%">
+    </ngx-extended-pdf-viewer>
+</div>
+
+<!-- Office -->
+<iframe
+    *ngIf="safePreviewUrl"
+    [src]="safePreviewUrl"
+    sandbox="allow-forms allow-same-origin allow-scripts"
+    class="inline-preview-iframe">
+</iframe>
+
+
+openPreview(file: ExistingFile): void {
+
+  this.previewFileName = file.name;
+  this.previewLoading = true;
+
+  if (file.name.toLowerCase().endsWith('.pdf')) {
+
+    this.pdfUrl = file.previewUrl;
+    this.safePreviewUrl = null;
+
+  } else {
+
+    this.pdfUrl = null;
+    this.safePreviewUrl =
+      this.sanitizer.bypassSecurityTrustResourceUrl(file.previewUrl);
+
+  }
+}<!-- PDF -->
+<div *ngIf="pdfUrl">
+    <ngx-extended-pdf-viewer
+        [src]="pdfUrl"
+        [showToolbar]="false"
+        [showSidebarButton]="false"
+        [showFindButton]="false"
+        [showOpenFileButton]="false"
+        [showPrintButton]="false"
+        [showDownloadButton]="false"
+        height="100%">
+    </ngx-extended-pdf-viewer>
+</div>
+
+<!-- Office -->
+<iframe
+    *ngIf="safePreviewUrl"
+    [src]="safePreviewUrl"
+    sandbox="allow-forms allow-same-origin allow-scripts"
+    class="inline-preview-iframe">
+</iframe>
+
+npm install ngx-extended-pdf-viewer
