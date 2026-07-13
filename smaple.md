@@ -599,3 +599,31 @@ Your `status-chip.component.ts` references `'./status-chip.component.html'` and 
 — which your second screenshot shows is already correct. Good.
 
 Next step: want me to build `candidate-detail` (the full single-candidate page, wired to `WorkflowVisibilityService`) or `panel-assignment` (HR's "assign interviewer + date" screen)?
+
+
+
+
+import { NgModule } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { AgGridModule } from 'ag-grid-angular';
+
+import { StatusChipComponent } from './components/status-chip/status-chip.component';
+import { WorkflowPipelineCellComponent } from './components/workflow-pipeline-cell/workflow-pipeline-cell.component';
+
+@NgModule({
+  declarations: [
+    StatusChipComponent,
+    WorkflowPipelineCellComponent
+  ],
+  imports: [
+    CommonModule,
+    AgGridModule
+  ],
+  exports: [
+    CommonModule,
+    AgGridModule,
+    StatusChipComponent,
+    WorkflowPipelineCellComponent
+  ]
+})
+export class SharedModule {}
