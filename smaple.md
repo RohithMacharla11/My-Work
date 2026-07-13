@@ -1,385 +1,648 @@
-Perfect, everything's clear. One shared `pendingComment` across all three flows, audit log gets the comment text in the comment field and file changes in attachmentChanges (Flow B only), View Comments gets only the comment text. Save button gated on non-empty text everywhere. Here's the complete final code.
+Good, let's start exactly there — SharePoint fetch → AG Grid dashboard, with everything reusable properly separated. Here's the structure and the code.
 
----
+## Folder structure
 
-## 1. State Changes
-
-```typescript
-// Flow B — Delete with mandatory comment, multi-select capable
-selectedForDeleteIndexes: number[] = [];
-showDeleteCommentModal: boolean = false;
-// pendingComment is now SHARED across Flow A, B, C — no separate pendingDeleteComment
+```
+src/app/
+├── core/
+│   ├── models/
+│   │   ├── candidate.model.ts
+│   │   ├── workflow-stage.enum.ts
+│   │   └── round-status.enum.ts
+│   └── services/
+│       ├── sharepoint.service.ts
+│       ├── candidate.service.ts
+│       └── workflow-visibility.service.ts
+├── shared/
+│   ├── components/
+│   │   ├── status-chip/
+│   │   │   ├── status-chip.component.ts
+│   │   │   └── status-chip.component.scss
+│   │   └── workflow-pipeline-cell/
+│   │       └── workflow-pipeline-cell.component.ts
+│   └── shared.module.ts
+├── features/
+│   └── candidate-dashboard/
+│       ├── candidate-dashboard.component.ts
+│       ├── candidate-dashboard.component.html
+│       ├── candidate-dashboard.component.scss
+│       └── candidate-dashboard.module.ts
+└── styles/
+    └── _tokens.scss
 ```
 
-Your existing `pendingComment`, `pendingAction`, `commentSaved`, `showAddCommentModal` stay as-is.
+## 1. Models — `core/models/`
 
----
-
-## 2. Action Label Helpers
-
+**`workflow-stage.enum.ts`**
 ```typescript
-private getCommentActionTag(action: string): string {
-  const effectiveRole = this.resolveEffectiveRole();
-
-  if (action === 'add') return `${effectiveRole}_Comment`;
-  if (action === 'delete') return `${effectiveRole}_DocDelete`;
-
-  const map: Record<string, Record<string, string>> = {
-    SenderMaker:     { submit: 'SM_Remark', draft: 'SM_Draft' },
-    SenderChecker:   { approve: 'SC_Remark', sendback: 'SC_Sendback', reject: 'SC_Reject' },
-    ReceiverMaker:   { submit: 'RM_Remark', approve: 'RM_Remark', throwback: 'RM_Throwback' },
-    ReceiverChecker: { approve: 'RC_Remark', sendback: 'RC_Sendback' },
-  };
-  return map[effectiveRole]?.[action] ?? `${effectiveRole}_${action}`;
+export enum WorkflowStage {
+  Unassigned = 'Unassigned',
+  PreScreen = 'PreScreen',
+  TechRound1 = 'TechRound1',
+  TechRound2Mgmt = 'TechRound2Mgmt',
+  OnShore = 'OnShore',
+  HrFinal = 'HrFinal',
+  OfferStage = 'OfferStage',
+  Rejected = 'Rejected'
 }
 
-private getAuditAction(action: string): string {
-  const map: Record<string, string> = {
-    draft:      'Saved and Locked the Record',
-    submit:     'Submitted the Record',
-    approve:    'Approved the Record',
-    throwback:  'Thrown Back the Record',
-    sendback:   'Sent Back the Record',
-    reject:     'Rejected the Record',
-    adminSave:  'Admin Updated the Record',
-    add:        'Added a Comment',
-    delete:     'Deleted Document(s)',
-  };
-  return map[action] || action;
-}
+export const WORKFLOW_STAGE_LABEL: Record<WorkflowStage, string> = {
+  [WorkflowStage.Unassigned]: 'Not assigned',
+  [WorkflowStage.PreScreen]: 'Pre-Screen',
+  [WorkflowStage.TechRound1]: 'Tech Round 1',
+  [WorkflowStage.TechRound2Mgmt]: 'Tech 2 / Management',
+  [WorkflowStage.OnShore]: 'On-Shore Round',
+  [WorkflowStage.HrFinal]: 'HR Round — final',
+  [WorkflowStage.OfferStage]: 'Offer stage',
+  [WorkflowStage.Rejected]: 'Rejected'
+};
+
+// Order matters — used to render the progress pipeline dots
+export const WORKFLOW_STAGE_ORDER: WorkflowStage[] = [
+  WorkflowStage.PreScreen,
+  WorkflowStage.TechRound1,
+  WorkflowStage.TechRound2Mgmt,
+  WorkflowStage.OnShore,
+  WorkflowStage.HrFinal
+];
 ```
 
----
-
-## 3. Shared Refresh Helper
-
+**`round-status.enum.ts`**
 ```typescript
-private async refreshRecordAfterSave(): Promise<void> {
-  this.LoadedRecord = this.source === 'archive'
-    ? await this.spService.getArchivalListItem(this.editItemId).toPromise()
-    : await this.spService.getListItem(this.editItemId).toPromise();
-
-  if (this.showViewCommentsModal) {
-    this.parsedComments = this.parseComments(this.LoadedRecord?.Comments || '');
-  }
-  if (this.showAuditModal) {
-    this.parsedAuditLog = this.parseAuditLog(this.LoadedRecord?.AuditLog || '');
-  }
-}
-
-private async refreshExistingFiles(): Promise<void> {
-  const files = this.source?.toLowerCase() === 'archive'
-    ? await this.spService.getArchivalFilesInFolder(this.liveid.toString()).toPromise()
-    : await this.spService.getFilesInFolder(this.editItemId.toString()).toPromise();
-
-  this.existingFiles = (files as any[]).map((f: any) => ({
-    name: f.Name,
-    downloadUrl: this.source === 'archive'
-      ? this.spService.buildArchivalDownloadUrl(this.liveid.toString(), f.Name)
-      : this.spService.buildDownloadUrl(this.editItemId.toString(), f.Name),
-    previewUrl: this.source === 'archive'
-      ? this.spService.buildArchivalPreviewUrl(this.liveid.toString(), f.Name)
-      : this.spService.buildPreviewUrl(this.editItemId.toString(), f.Name),
-    uploadedBy: this.source === 'archive'
-      ? f.ListItemAllFields.FieldValuesAsText.CreatedByLive?.split('\\').pop()?.trim() || ''
-      : f.Author?.LoginName?.split('\\').pop()?.trim() || '',
-    uploadedById: this.source === 'archive'
-      ? f.ListItemAllFields.CreatedByLiveId || null
-      : f.Author?.Id || null,
-    uploadedRole: this.getRoleFromUserGroup(),
-    markedForDeletion: false,
-    isDeleted: f.ListItemAllFields?.isDeleted === true,
-    fileItemId: f.ListItemAllFields?.Id || null,
-    uploadedOn: this.source === 'archive'
-      ? (f.ListItemAllFields.CreatedDateLive ? new Date(f.ListItemAllFields.CreatedDateLive) : null)
-      : (f.ListItemAllFields.Modified ? new Date(f.ListItemAllFields.Modified) : null)
-  })).sort((a, b) => (b.fileItemId || 0) - (a.fileItemId || 0));
+export enum RoundStatus {
+  Pending = 'Pending',
+  Selected = 'Selected',
+  Rejected = 'Rejected',
+  Locked = 'Locked',       // previous round not yet Selected
+  NotAssigned = 'NotAssigned'
 }
 ```
 
----
-
-## 4. Master `saveComment()` Dispatcher
+**`candidate.model.ts`** — mirrors your `InterviewDetailsCT` columns directly, so mapping from SharePoint stays 1:1 and honest to the real schema.
 
 ```typescript
-saveComment(): void {
-  if (!this.pendingComment.trim()) return;
+import { RoundStatus } from './round-status.enum';
 
-  if (this.showDeleteCommentModal) {
-    this.saveDeleteComment();
-    return;
-  }
-  if (this.pendingAction) {
-    this.saveActionComment();
-    return;
-  }
-  this.saveStandaloneComment();
+export interface SkillAssessment {
+  skillName: string;
+  screeningScore: string;
+  techRound1Comment: string;
+  techRound2Comment: string;
+}
+
+export interface InterviewRound {
+  interviewedBy: SharePointUser | null;
+  interviewDate: string | null;      // ISO date
+  interviewFeedback: string | null;
+  selection: RoundStatus;
+}
+
+export interface SharePointUser {
+  id: number;
+  title: string;
+  email: string;
+}
+
+export interface Candidate {
+  // SharePoint system
+  id: number;                        // SP list item ID
+  listSource: 'Chennai' | 'Mumbai';
+
+  // Candidate core fields
+  candidateId: string;
+  candidateName: string;
+  candidateEmailId: string;
+  candidatePhoneNumber: string;
+  location: string;
+  roleDesignation: string;
+  profile: string;                   // e.g. "Java Full Stack"
+  allocatedBizLine: string;
+
+  // Pre-screening
+  prescreeningTestLink: string;
+  prescreeningTestDate: string | null;
+  prescreeningScore: string;
+  prescreeningSelected: RoundStatus;
+  prescreeningComments: string;
+
+  // Skills 1–10 (fixed grid — matches SP schema)
+  skills: SkillAssessment[];
+
+  // Rounds
+  techRound1: InterviewRound;
+  techRound2Mgmt: InterviewRound;
+  onShoreRound: InterviewRound;
+  hrRound: InterviewRound;
+
+  // Admin/system
+  cvUpload: string;
+  hireproResultsUpload: string;
 }
 ```
 
----
+## 2. SharePoint fetch service — `core/services/sharepoint.service.ts`
 
-## 5. Flow A — Standalone Add Comment
+Generic, reusable — not tied to candidates. Any other list in the future uses this too.
 
 ```typescript
-private async saveStandaloneComment(): Promise<void> {
-  this.isLoading = true;
-  try {
-    const digest = this.source === 'archive'
-      ? await this.spService.getArchivalRequestDigest().toPromise()
-      : await this.spService.getRequestDigest().toPromise();
+import { Injectable } from '@angular/core';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
 
-    const effectiveRole = this.resolveEffectiveRole();
-    const actionTag = this.getCommentActionTag('add');
-    const addedBy = this.userService.uid || 'Unknown';
-    const addedOn = new Date().toLocaleString('en-GB', {
-      day: '2-digit', month: 'short', year: 'numeric',
-      hour: '2-digit', minute: '2-digit', hour12: false
+export interface SpListResponse<T> {
+  d: { results: T[] };
+}
+
+@Injectable({ providedIn: 'root' })
+export class SharePointService {
+  private readonly siteUrl = '/sites/ISPLCohort'; // adjust to your site path
+
+  constructor(private http: HttpClient) {}
+
+  getListItems<T>(listName: string, selectFields: string[], expandFields: string[] = [], filter?: string): Observable<T[]> {
+    let url = `${this.siteUrl}/_api/web/lists/getbytitle('${listName}')/items`
+      + `?$select=${selectFields.join(',')}`;
+
+    if (expandFields.length) {
+      url += `&$expand=${expandFields.join(',')}`;
+    }
+    if (filter) {
+      url += `&$filter=${filter}`;
+    }
+
+    const headers = new HttpHeaders({
+      'Accept': 'application/json;odata=verbose'
     });
-    const commentText = this.pendingComment.trim();
-    const commentEntry = `${effectiveRole};${actionTag};${addedBy};${addedOn};${commentText}`;
-    const existingComments = this.LoadedRecord?.Comments || '';
-    const newComments = existingComments ? `${commentEntry}||${existingComments}` : commentEntry;
 
-    const auditEntry = this.buildAuditEntry(
-      this.getAuditAction('add'),
-      this.LoadedRecord?.Status || 'NA',
-      'NA',
-      commentText
+    return this.http.get<SpListResponse<T>>(url, { headers }).pipe(
+      map(res => res.d.results)
     );
+  }
 
-    const payload = { Comments: newComments, AuditLog: auditEntry };
+  getListItemById<T>(listName: string, id: number, selectFields: string[], expandFields: string[] = []): Observable<T> {
+    let url = `${this.siteUrl}/_api/web/lists/getbytitle('${listName}')/items(${id})`
+      + `?$select=${selectFields.join(',')}`;
 
-    if (this.source === 'archive') {
-      await this.spService.updateArchivalListItem(digest, this.editItemId, payload).toPromise();
-    } else {
-      await this.spService.updateListItem(digest, this.editItemId, payload).toPromise();
+    if (expandFields.length) {
+      url += `&$expand=${expandFields.join(',')}`;
     }
 
-    await this.refreshRecordAfterSave();
-    this.showToast('Comment added successfully', 'success');
-    this.cancelComment();
-  } catch (err: any) {
-    console.error('Add comment error:', err);
-    this.showToast('Failed to add comment. Please try again.', 'error');
-  } finally {
-    this.isLoading = false;
+    const headers = new HttpHeaders({ 'Accept': 'application/json;odata=verbose' });
+    return this.http.get<{ d: T }>(url, { headers }).pipe(map(res => res.d));
   }
 }
 ```
 
----
+## 3. Candidate mapping service — `core/services/candidate.service.ts`
 
-## 6. Flow B — Delete Document(s) with mandatory comment
-
-**Trigger — wherever your existing bulk delete button calls `markSelectedForDeletion()`, change it to open the modal instead:**
+This is where raw SharePoint fields → your clean `Candidate` model, and where the **derived status** logic lives (per Rule: status is computed, never stored).
 
 ```typescript
-openDeleteCommentModal(): void {
-  if (this.selectedFileIndexes.length === 0) return;
-  this.pendingComment = '';
-  this.showDeleteCommentModal = true;
-  document.body.style.overflow = 'hidden';
+import { Injectable } from '@angular/core';
+import { Observable, forkJoin } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { SharePointService } from './sharepoint.service';
+import { Candidate, SkillAssessment } from '../models/candidate.model';
+import { RoundStatus } from '../models/round-status.enum';
+import { WorkflowStage } from '../models/workflow-stage.enum';
+
+const SELECT_FIELDS = [
+  'Id', 'CandidateId', 'CandidateName', 'CandidateEmailId', 'CandidatePhoneNumber',
+  'Location', 'RoleDesignation', 'Profile', 'AllocatedBizLine',
+  'PrescreeningTestLink', 'PrescreeningTestDate', 'PrescreeningScore',
+  'PrescreeningSelected', 'PrescreeningComments',
+  'SkillOne', 'SkillOneScore', 'SkillOneTROne', 'SkillOneTRTwo',
+  'SkillTwo', 'SkillTwoScore', 'SkillTwoTROne', 'SkillTwoTRTwo',
+  'SkillThree', 'SkillThreeScore', 'SkillThreeTROne', 'SkillThreeTRTwo',
+  'SkillFour', 'SkillFourScore', 'SkillFourTROne', 'SkillFourTRTwo',
+  'SkillFive', 'SkillFiveScore', 'SkillFiveTROne', 'SkillFiveTRTwo',
+  'TechRound1InterviewDate', 'TechRound1InterviewFeedback', 'TechRound1InterviewSelection',
+  'Tech2MgmtRoundInterviewDate', 'Tech2MgmtRoundInterviewFeedback', 'Tech2MgmtRoundInterviewSelection',
+  'OnShoreRoundInterviewDate', 'OnShoreRoundInterviewFeedback', 'OnShoreRoundInterviewSelection',
+  'HrRoundInterviewDate', 'HrRoundInterviewFeedback', 'HrRoundInterviewSelection',
+  'CvUpload', 'HireproResultsUpload'
+];
+
+const EXPAND_FIELDS = [
+  'TechRound1InterviewedBy', 'Tech2MgmtRoundInterviewedBy',
+  'OnShoreRoundInterviewedBy', 'HrRoundInterviewedBy'
+];
+
+@Injectable({ providedIn: 'root' })
+export class CandidateService {
+
+  constructor(private sp: SharePointService) {}
+
+  getCandidates(source: 'Chennai' | 'Mumbai'): Observable<Candidate[]> {
+    const listName = source === 'Chennai' ? 'ChennaiInterviewList' : 'MumbaiInterviewList';
+
+    return this.sp.getListItems<any>(listName, SELECT_FIELDS, EXPAND_FIELDS).pipe(
+      map(items => items.map(item => this.mapToCandidate(item, source)))
+    );
+  }
+
+  getAllCandidates(): Observable<Candidate[]> {
+    return forkJoin([
+      this.getCandidates('Chennai'),
+      this.getCandidates('Mumbai')
+    ]).pipe(map(([chennai, mumbai]) => [...chennai, ...mumbai]));
+  }
+
+  private mapToCandidate(item: any, source: 'Chennai' | 'Mumbai'): Candidate {
+    return {
+      id: item.Id,
+      listSource: source,
+      candidateId: item.CandidateId,
+      candidateName: item.CandidateName,
+      candidateEmailId: item.CandidateEmailId,
+      candidatePhoneNumber: item.CandidatePhoneNumber,
+      location: item.Location,
+      roleDesignation: item.RoleDesignation,
+      profile: item.Profile,
+      allocatedBizLine: item.AllocatedBizLine,
+
+      prescreeningTestLink: item.PrescreeningTestLink,
+      prescreeningTestDate: item.PrescreeningTestDate,
+      prescreeningScore: item.PrescreeningScore,
+      prescreeningSelected: this.toRoundStatus(item.PrescreeningSelected),
+      prescreeningComments: item.PrescreeningComments,
+
+      skills: this.mapSkills(item),
+
+      techRound1: {
+        interviewedBy: this.mapUser(item.TechRound1InterviewedBy),
+        interviewDate: item.TechRound1InterviewDate,
+        interviewFeedback: item.TechRound1InterviewFeedback,
+        selection: this.toRoundStatus(item.TechRound1InterviewSelection)
+      },
+      techRound2Mgmt: {
+        interviewedBy: this.mapUser(item.Tech2MgmtRoundInterviewedBy),
+        interviewDate: item.Tech2MgmtRoundInterviewDate,
+        interviewFeedback: item.Tech2MgmtRoundInterviewFeedback,
+        selection: this.toRoundStatus(item.Tech2MgmtRoundInterviewSelection)
+      },
+      onShoreRound: {
+        interviewedBy: this.mapUser(item.OnShoreRoundInterviewedBy),
+        interviewDate: item.OnShoreRoundInterviewDate,
+        interviewFeedback: item.OnShoreRoundInterviewFeedback,
+        selection: this.toRoundStatus(item.OnShoreRoundInterviewSelection)
+      },
+      hrRound: {
+        interviewedBy: this.mapUser(item.HrRoundInterviewedBy),
+        interviewDate: item.HrRoundInterviewDate,
+        interviewFeedback: item.HrRoundInterviewFeedback,
+        selection: this.toRoundStatus(item.HrRoundInterviewSelection)
+      },
+
+      cvUpload: item.CvUpload,
+      hireproResultsUpload: item.HireproResultsUpload
+    };
+  }
+
+  private mapSkills(item: any): SkillAssessment[] {
+    const skillKeys = ['One', 'Two', 'Three', 'Four', 'Five']; // extend to Ten as needed
+    return skillKeys
+      .map(k => ({
+        skillName: item[`Skill${k}`],
+        screeningScore: item[`Skill${k}Score`],
+        techRound1Comment: item[`Skill${k}TROne`],
+        techRound2Comment: item[`Skill${k}TRTwo`]
+      }))
+      .filter(s => !!s.skillName);
+  }
+
+  private mapUser(spUserField: any): { id: number; title: string; email: string } | null {
+    if (!spUserField) return null;
+    return {
+      id: spUserField.Id ?? spUserField.results?.[0]?.Id,
+      title: spUserField.Title ?? spUserField.results?.[0]?.Title,
+      email: spUserField.EMail ?? spUserField.results?.[0]?.EMail
+    };
+  }
+
+  private toRoundStatus(value: string | null): RoundStatus {
+    if (value === 'Selected') return RoundStatus.Selected;
+    if (value === 'Rejected') return RoundStatus.Rejected;
+    return RoundStatus.Pending;
+  }
+
+  /** Derived — never stored. Computes current stage from the 4 round decisions. */
+  getCurrentStage(c: Candidate): WorkflowStage {
+    if (c.hrRound.selection === RoundStatus.Rejected
+      || c.onShoreRound.selection === RoundStatus.Rejected
+      || c.techRound2Mgmt.selection === RoundStatus.Rejected
+      || c.techRound1.selection === RoundStatus.Rejected
+      || c.prescreeningSelected === RoundStatus.Rejected) {
+      return WorkflowStage.Rejected;
+    }
+    if (c.hrRound.selection === RoundStatus.Selected) return WorkflowStage.OfferStage;
+    if (c.onShoreRound.selection === RoundStatus.Selected) return WorkflowStage.HrFinal;
+    if (c.techRound2Mgmt.selection === RoundStatus.Selected) return WorkflowStage.OnShore;
+    if (c.techRound1.selection === RoundStatus.Selected) return WorkflowStage.TechRound2Mgmt;
+    if (c.prescreeningSelected === RoundStatus.Selected) return WorkflowStage.TechRound1;
+    return WorkflowStage.Unassigned;
+  }
 }
 ```
 
-**HTML — update your existing bulk delete button:**
+## 4. BNP theme tokens — `styles/_tokens.scss`
 
-```html
-<button class="btn-bulk-delete" 
-  [disabled]="selectedFileIndexes.length === 0"
-  (click)="openDeleteCommentModal()">
-  Delete Selected ({{ selectedFileIndexes.length }})
-</button>
+```scss
+:root {
+  --cohort-primary: #00785A;
+  --cohort-primary-deep: #005B43;
+  --cohort-canvas: #F4F6F5;
+  --cohort-text: #1F2A28;
+  --cohort-muted: #6B7674;
+  --cohort-border: #E3E8E6;
+
+  --status-pass-bg: #E4F4EE;
+  --status-pass-text: #00785A;
+  --status-reject-bg: #FBE9EA;
+  --status-reject-text: #C0392B;
+  --status-wait-bg: #FFF6DD;
+  --status-wait-text: #8A6D00;
+  --status-idle-bg: #EEF0EF;
+  --status-idle-text: #6B7674;
+}
 ```
 
-**The save handler:**
+## 5. Status chip — reusable, `shared/components/status-chip/`
 
 ```typescript
-private async saveDeleteComment(): Promise<void> {
-  if (this.selectedFileIndexes.length === 0) {
-    this.cancelDeleteComment();
-    return;
+import { Component, Input } from '@angular/core';
+import { RoundStatus } from '../../../core/models/round-status.enum';
+
+@Component({
+  selector: 'app-status-chip',
+  template: `<span class="chip" [class]="statusClass">{{ label }}</span>`,
+  styleUrls: ['./status-chip.component.scss']
+})
+export class StatusChipComponent {
+  @Input() status: RoundStatus = RoundStatus.Pending;
+  @Input() customLabel?: string;
+
+  get label(): string {
+    return this.customLabel ?? this.status;
   }
 
-  this.isLoading = true;
-  try {
-    const digest = this.source === 'archive'
-      ? await this.spService.getArchivalRequestDigest().toPromise()
-      : await this.spService.getRequestDigest().toPromise();
-
-    const filesToDelete = this.selectedFileIndexes
-      .map(i => this.existingFiles[i])
-      .filter(f => f && !f.isDeleted);
-
-    const fileNames = filesToDelete.map(f => f.name).join(', ');
-
-    for (const file of filesToDelete) {
-      const deletedName = `deleted_${file.name}`;
-      await this.spService.updateFileItem(
-        digest,
-        file.fileItemId!,
-        { isDeleted: true, FileLeafRef: deletedName }
-      ).toPromise();
+  get statusClass(): string {
+    switch (this.status) {
+      case RoundStatus.Selected: return 'chip--pass';
+      case RoundStatus.Rejected: return 'chip--reject';
+      case RoundStatus.Locked:
+      case RoundStatus.Pending: return 'chip--wait';
+      default: return 'chip--idle';
     }
+  }
+}
+```
 
-    const effectiveRole = this.resolveEffectiveRole();
-    const actionTag = this.getCommentActionTag('delete');
-    const addedBy = this.userService.uid || 'Unknown';
-    const addedOn = new Date().toLocaleString('en-GB', {
-      day: '2-digit', month: 'short', year: 'numeric',
-      hour: '2-digit', minute: '2-digit', hour12: false
+```scss
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+
+  &--pass { background: var(--status-pass-bg); color: var(--status-pass-text); }
+  &--reject { background: var(--status-reject-bg); color: var(--status-reject-text); }
+  &--wait { background: var(--status-wait-bg); color: var(--status-wait-text); }
+  &--idle { background: var(--status-idle-bg); color: var(--status-idle-text); }
+}
+```
+
+## 6. Dashboard component — the actual AG Grid page
+
+**`candidate-dashboard.component.ts`**
+
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { Router } from '@angular/router';
+import { ColDef, GridOptions } from 'ag-grid-community';
+import { CandidateService } from '../../core/services/candidate.service';
+import { Candidate } from '../../core/models/candidate.model';
+import { WORKFLOW_STAGE_LABEL } from '../../core/models/workflow-stage.enum';
+import { WorkflowPipelineCellComponent } from '../../shared/components/workflow-pipeline-cell/workflow-pipeline-cell.component';
+
+@Component({
+  selector: 'app-candidate-dashboard',
+  templateUrl: './candidate-dashboard.component.html',
+  styleUrls: ['./candidate-dashboard.component.scss']
+})
+export class CandidateDashboardComponent implements OnInit {
+
+  rowData: Candidate[] = [];
+  quickFilterText = '';
+  loading = true;
+  errorMessage: string | null = null;
+
+  columnDefs: ColDef[] = [
+    {
+      headerName: 'Candidate',
+      field: 'candidateName',
+      flex: 2,
+      cellRenderer: (params: any) => `
+        <div class="candidate-cell">
+          <div class="avatar">${this.initials(params.data.candidateName)}</div>
+          <div>
+            <div class="name">${params.data.candidateName}</div>
+            <div class="email">${params.data.candidateEmailId}</div>
+          </div>
+        </div>`
+    },
+    {
+      headerName: 'Role / Profile',
+      field: 'roleDesignation',
+      flex: 1.2,
+      valueGetter: (p) => `${p.data.roleDesignation} — ${p.data.profile}`
+    },
+    {
+      headerName: 'Pre-Screen',
+      field: 'prescreeningScore',
+      flex: 1,
+      valueGetter: (p) => `${p.data.prescreeningScore} · ${p.data.prescreeningSelected}`
+    },
+    {
+      headerName: 'Workflow',
+      field: 'currentStage',
+      flex: 1.5,
+      cellRenderer: WorkflowPipelineCellComponent
+    },
+    {
+      headerName: 'Action',
+      flex: 0.8,
+      cellRenderer: () => `<button class="open-btn">Open</button>`,
+      onCellClicked: (params) => this.openCandidate(params.data)
+    }
+  ];
+
+  gridOptions: GridOptions = {
+    rowHeight: 64,
+    headerHeight: 44,
+    suppressCellFocus: true,
+    domLayout: 'autoHeight'
+  };
+
+  constructor(
+    private candidateService: CandidateService,
+    private router: Router
+  ) {}
+
+  ngOnInit(): void {
+    this.loadCandidates();
+  }
+
+  loadCandidates(): void {
+    this.loading = true;
+    this.errorMessage = null;
+
+    this.candidateService.getAllCandidates().subscribe({
+      next: (candidates) => {
+        this.rowData = candidates.map(c => ({
+          ...c,
+          currentStage: this.candidateService.getCurrentStage(c),
+          currentStageLabel: WORKFLOW_STAGE_LABEL[this.candidateService.getCurrentStage(c)]
+        })) as any;
+        this.loading = false;
+      },
+      error: () => {
+        this.errorMessage = 'This query is too large for SharePoint to run. A column used in the filter needs to be indexed.';
+        this.loading = false;
+      }
     });
-    const commentText = this.pendingComment.trim();
-    // Comment field gets ONLY the comment text — file names go in attachmentChanges
-    const commentEntry = `${effectiveRole};${actionTag};${addedBy};${addedOn};${commentText}`;
-    const existingComments = this.LoadedRecord?.Comments || '';
-    const newComments = existingComments ? `${commentEntry}||${existingComments}` : commentEntry;
-
-    const attachmentChanges = `Deleted: ${fileNames}`;
-    const auditEntry = this.buildAuditEntry(
-      this.getAuditAction('delete'),
-      this.LoadedRecord?.Status || 'NA',
-      attachmentChanges,
-      commentText
-    );
-
-    const payload = { Comments: newComments, AuditLog: auditEntry };
-    if (this.source === 'archive') {
-      await this.spService.updateArchivalListItem(digest, this.editItemId, payload).toPromise();
-    } else {
-      await this.spService.updateListItem(digest, this.editItemId, payload).toPromise();
-    }
-
-    await this.refreshExistingFiles();
-    await this.refreshRecordAfterSave();
-
-    this.showToast(`${filesToDelete.length} document(s) deleted successfully`, 'success');
-    this.selectedFileIndexes = [];
-    this.cancelDeleteComment();
-  } catch (err: any) {
-    console.error('Delete document error:', err);
-    this.showToast('Failed to delete document(s). Please try again.', 'error');
-  } finally {
-    this.isLoading = false;
-  }
-}
-
-cancelDeleteComment(): void {
-  // Selection stays — only revert the "marked for deletion" intent, not the multi-select itself
-  this.pendingComment = '';
-  this.showDeleteCommentModal = false;
-  document.body.style.overflow = '';
-}
-```
-
-Note: I'm using your existing `selectedFileIndexes` (the same array your current bulk-select checkboxes already populate) — not a new array — since you confirmed it's the same multi-select mechanism as before, just the trigger button now opens a modal instead of marking immediately.
-
----
-
-## 7. Flow C — Throwback/Sendback
-
-**`onSave()` — remove the old defer-and-reopen block, leave everything else identical:**
-
-```typescript
-async onSave(action: 'draft' | 'submit' | 'approve' | 'throwback' | 'sendback' | 'reject' | 'adminSave'): Promise<void> {
-  console.log("onSave called");
-  console.log(this.permissions);
-  if(!this.permissions?.canAdminSave && this.permissions?.isReadOnly) {
-    this.showToast("You do not have permissions to edit this form",'error');
-    return;
   }
 
-  // Old gating block REMOVED — Flow C now always opens modal first via button click, never reaches onSave directly until comment is saved
+  openCandidate(candidate: Candidate): void {
+    this.router.navigate(['/candidates', candidate.listSource, candidate.id]);
+  }
 
-  if(action === 'submit' && !this.validateBeforeSubmit()) return;
-  if(action === 'draft') this.draftSaved = true;
-  // ...rest unchanged exactly as before
-```
-
-**The trigger handler:**
-
-```typescript
-private saveActionComment(): void {
-  this.commentSaved = true;
-  this.showAddCommentModal = false;
-  document.body.style.overflow = '';
-
-  const action = this.pendingAction;
-  this.pendingAction = '';
-  const savedComment = this.pendingComment;
-  this.pendingComment = '';
-  
-  this.onSave(action as any);
+  private initials(name: string): string {
+    return name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+  }
 }
 ```
 
-**HTML — Throwback/Sendback buttons always route through the modal:**
+**`candidate-dashboard.component.html`**
 
 ```html
-<button *ngIf="p?.canThrowback" class="btn-warning" 
-  (click)="pendingAction='throwback'; openAddCommentModal(true)">
-  Throwback
-</button>
+<div class="dashboard-container">
+  <header class="dashboard-header">
+    <h4>Recruitment Pipeline</h4>
+    <h1>Candidates</h1>
+  </header>
 
-<button *ngIf="p?.canSendBack" class="btn-warning" 
-  (click)="pendingAction='sendback'; openAddCommentModal(true)">
-  Sendback
-</button>
-```
-
----
-
-## 8. `cancelComment()` — shared cancel for Flow A & C
-
-```typescript
-cancelComment(): void {
-  this.pendingComment = '';
-  this.commentSaved = false;
-  this.pendingAction = '';
-  this.showAddCommentModal = false;
-  this.addCommentWarning = false;
-  document.body.style.overflow = '';
-}
-```
-
----
-
-## 9. HTML — Save button gating (Add Comment modal AND Delete modal)
-
-```html
-<!-- Add Comment Modal (Flow A & C share this) -->
-<button class="btn-bnpp-green" [disabled]="!pendingComment.trim()" (click)="saveComment()">
-  Save Comment
-</button>
-```
-
-```html
-<!-- Delete Comment Modal (new, Flow B) -->
-<div class="comment-modal-backdrop" *ngIf="showDeleteCommentModal" (click)="cancelDeleteComment()">
-  <div class="comment-modal-box" (click)="$event.stopPropagation()">
-    <div class="comment-modal-header">
-      <h3>Confirm Document Deletion</h3>
-      <span class="close-x" (click)="cancelDeleteComment()">×</span>
-    </div>
-    <div class="comment-modal-body">
-      <p class="delete-file-summary">
-        Deleting {{ selectedFileIndexes.length }} document(s):
-        <strong>{{ selectedFileIndexes.map(i => existingFiles[i]?.name).join(', ') }}</strong>
-      </p>
-      <p class="comment-mandatory-note">⚠ A comment is mandatory to delete document(s).</p>
-      <textarea [(ngModel)]="pendingComment" placeholder="Enter reason for deletion..." rows="5"></textarea>
-    </div>
-    <div class="comment-modal-footer">
-      <button class="btn-secondary" (click)="cancelDeleteComment()">Cancel</button>
-      <button class="btn-bnpp-green" [disabled]="!pendingComment.trim()" (click)="saveComment()">
-        Save & Delete
-      </button>
-    </div>
+  <div class="dashboard-toolbar">
+    <input
+      type="text"
+      class="search-input"
+      placeholder="Search name, email, phone, ID, role, profile or skill..."
+      [(ngModel)]="quickFilterText"
+      (input)="gridApi.setQuickFilter(quickFilterText)" />
   </div>
+
+  <div *ngIf="loading" class="state-panel">Searching SharePoint...</div>
+
+  <div *ngIf="errorMessage" class="state-panel state-panel--error">
+    <p>Something went wrong</p>
+    <p class="detail">{{ errorMessage }}</p>
+    <button (click)="loadCandidates()">Try again</button>
+  </div>
+
+  <ag-grid-angular
+    *ngIf="!loading && !errorMessage"
+    class="ag-theme-cohort"
+    [rowData]="rowData"
+    [columnDefs]="columnDefs"
+    [gridOptions]="gridOptions"
+    (gridReady)="gridApi = $event.api">
+  </ag-grid-angular>
 </div>
 ```
 
----
+**`candidate-dashboard.component.scss`**
 
-That's the complete set. Drop these in and you're done — no more pieces missing.
+```scss
+@import '../../../styles/tokens';
+
+.dashboard-container {
+  padding: 24px;
+  background: var(--cohort-canvas);
+}
+
+.dashboard-header h4 {
+  color: var(--cohort-muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.dashboard-header h1 {
+  color: var(--cohort-text);
+  margin: 4px 0 20px;
+}
+
+.search-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--cohort-border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+
+  &:focus {
+    outline: none;
+    border-color: var(--cohort-primary);
+  }
+}
+
+::ng-deep .candidate-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  .avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: var(--cohort-primary);
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .name { font-weight: 600; color: var(--cohort-text); }
+  .email { font-size: 12px; color: var(--cohort-muted); }
+}
+
+::ng-deep .open-btn {
+  background: transparent;
+  color: var(--cohort-primary);
+  border: 1px solid var(--cohort-primary);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-weight: 600;
+
+  &:hover { background: var(--cohort-primary); color: white; }
+}
+
+.state-panel {
+  text-align: center;
+  padding: 60px 0;
+  color: var(--cohort-muted);
+
+  &--error { color: var(--status-reject-text); }
+}
+```
+
+## What's next
+
+Once you route `/candidates/:source/:id`, the click sends you to a **detail component** that reuses `StatusChipComponent` and a new `SkillAssessmentGridComponent` (shared, since Tech Round 1 and Tech Round 2 detail views both need it) — pulling from the *same* `CandidateService.getCandidateById()`, not a separate call.
+
+Want me to build that detail page next, with the visibility service wired in (locked/read-only/editable per round based on logged-i
