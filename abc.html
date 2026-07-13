@@ -1,63 +1,328 @@
-<!-- PDF -->
-<div *ngIf="pdfUrl">
-    <ngx-extended-pdf-viewer
-        [src]="pdfUrl"
-        [showToolbar]="false"
-        [showSidebarButton]="false"
-        [showFindButton]="false"
-        [showOpenFileButton]="false"
-        [showPrintButton]="false"
-        [showDownloadButton]="false"
-        height="100%">
-    </ngx-extended-pdf-viewer>
+<nav class="topnav">
+  <div class="brand-group">
+    <div class="brand-badge">ISPL</div>
+    <h1 class="brand-title">Cohort Hiring Portal</h1>
+  </div>
+
+  <div class="nav-links">
+    <a routerLink="/dashboard" routerLinkActive="nav-link-active" class="nav-link">Dashboard</a>
+    <a routerLink="/intake" routerLinkActive="nav-link-active" class="nav-link">Add Candidate</a>
+  </div>
+</nav>
+
+<main class="app-main">
+  <router-outlet></router-outlet>
+</main>
+
+
+
+
+
+
+
+
+
+
+.topnav {
+  @apply bg-bnpGreen text-white shadow-lg px-8 py-3 flex justify-between items-center sticky top-0 z-50;
+}
+.brand-group { @apply flex items-center space-x-3; }
+.brand-badge { @apply bg-white text-bnpGreen p-1 rounded font-black text-sm; }
+.brand-title { @apply text-lg font-semibold tracking-wide; }
+
+.nav-links { @apply flex space-x-1; }
+.nav-link {
+  @apply px-4 py-2 rounded-md transition-all duration-200 cursor-pointer text-sm font-medium;
+  &:hover { @apply bg-bnpGreen-dark; }
+}
+.nav-link-active { @apply bg-bnpGreen-dark; }
+
+.app-main { @apply bg-bnpGrey-100 min-h-screen p-4 md:p-8; }
+
+
+
+
+
+
+
+
+
+
+
+<div class="form-wrapper">
+  <div class="form-header">
+    <h2 class="form-title">{{ isEditMode ? 'Update Candidate Profile' : 'Candidate Onboarding' }}</h2>
+    <p class="form-subtitle">Please upload the resume first, then verify the details.</p>
+  </div>
+
+  <form [formGroup]="candidateForm" (ngSubmit)="onSave()" class="form-body">
+
+    <!-- STEP 1: UPLOAD SECTION -->
+    <div class="section-card">
+      <div class="section-heading">
+        <span class="step-badge">1</span>
+        <h3 class="section-title">Document Upload</h3>
+      </div>
+
+      <div class="upload-zone-wrap">
+        <label class="upload-zone">
+          <div class="upload-inner">
+            <svg class="upload-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+            </svg>
+            <p class="upload-text"><span class="upload-text-strong">Click to upload CV</span> or drag and drop</p>
+            <p class="upload-hint">PDF, DOCX (MAX. 5MB)</p>
+          </div>
+          <input type="file" (change)="onFileSelected($event)" class="hidden" />
+        </label>
+      </div>
+      <p *ngIf="candidateForm.value.CVFile" class="upload-success">
+        ✓ {{ candidateForm.value.CVFile.name }} uploaded successfully
+      </p>
+    </div>
+
+    <!-- STEP 2: MANUAL ENTRY SECTION -->
+    <div class="section-card">
+      <div class="section-heading">
+        <span class="step-badge">2</span>
+        <h3 class="section-title">Candidate Details</h3>
+      </div>
+
+      <div class="field-grid">
+        <div class="field-col">
+          <label class="field-label">Full Name</label>
+          <input formControlName="CandidateName" class="field-input" placeholder="Enter full name">
+        </div>
+        <div class="field-col">
+          <label class="field-label">Email Address</label>
+          <input formControlName="CandidateEmail" class="field-input" placeholder="email@example.com">
+        </div>
+        <div class="field-col">
+          <label class="field-label">Phone Number</label>
+          <input formControlName="PhoneNumber" class="field-input" placeholder="+91 0000000000">
+        </div>
+        <div class="field-col">
+          <label class="field-label">Location</label>
+          <input formControlName="Location" class="field-input" placeholder="City, Country">
+        </div>
+        <div class="field-col">
+          <label class="field-label">Designation/Role</label>
+          <input formControlName="Role" class="field-input" placeholder="e.g. AVP / AM">
+        </div>
+        <div class="field-col">
+          <label class="field-label">Technical Profile</label>
+          <input formControlName="Profile" class="field-input" placeholder="e.g. Java Full Stack">
+        </div>
+      </div>
+    </div>
+
+    <!-- FOOTER ACTIONS -->
+    <div class="form-footer">
+      <button type="button" (click)="router.navigate(['/dashboard'])" class="btn-cancel">Cancel</button>
+      <button type="submit" [disabled]="loading" class="btn-save">
+        {{ loading ? 'Processing...' : (isEditMode ? 'Update Profile' : 'Save Candidate') }}
+      </button>
+    </div>
+
+  </form>
 </div>
 
-<!-- Office -->
-<iframe
-    *ngIf="safePreviewUrl"
-    [src]="safePreviewUrl"
-    sandbox="allow-forms allow-same-origin allow-scripts"
-    class="inline-preview-iframe">
-</iframe>
 
 
-openPreview(file: ExistingFile): void {
 
-  this.previewFileName = file.name;
-  this.previewLoading = true;
 
-  if (file.name.toLowerCase().endsWith('.pdf')) {
 
-    this.pdfUrl = file.previewUrl;
-    this.safePreviewUrl = null;
 
-  } else {
 
-    this.pdfUrl = null;
-    this.safePreviewUrl =
-      this.sanitizer.bypassSecurityTrustResourceUrl(file.previewUrl);
 
-  }
-}<!-- PDF -->
-<div *ngIf="pdfUrl">
-    <ngx-extended-pdf-viewer
-        [src]="pdfUrl"
-        [showToolbar]="false"
-        [showSidebarButton]="false"
-        [showFindButton]="false"
-        [showOpenFileButton]="false"
-        [showPrintButton]="false"
-        [showDownloadButton]="false"
-        height="100%">
-    </ngx-extended-pdf-viewer>
+.form-wrapper { @apply max-w-4xl mx-auto; }
+.form-header { @apply mb-8; }
+.form-title { @apply text-3xl font-bold text-bnpGrey-900; }
+.form-subtitle { @apply text-bnpGrey-700; }
+.form-body { @apply space-y-6; }
+
+.section-card {
+  @apply bg-white p-6 rounded-xl shadow-sm border-l-4 border-bnpGreen transition-all;
+  &:hover { @apply shadow-md; }
+}
+.section-heading { @apply flex items-center space-x-3 mb-4; }
+.step-badge { @apply bg-bnpGreen text-white w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold; }
+.section-title { @apply text-lg font-semibold text-bnpGrey-900; }
+
+.upload-zone-wrap { @apply flex items-center justify-center w-full; }
+.upload-zone {
+  @apply flex flex-col items-center justify-center w-full h-32 border-2 border-bnpGrey-200 border-dashed rounded-lg cursor-pointer bg-bnpGrey-100 transition-colors;
+  &:hover { @apply bg-bnpGrey-200; }
+}
+.upload-inner { @apply flex flex-col items-center justify-center pt-5 pb-6; }
+.upload-icon { @apply w-8 h-8 mb-3 text-bnpGreen; }
+.upload-text { @apply text-sm text-bnpGrey-700; }
+.upload-text-strong { @apply font-semibold; }
+.upload-hint { @apply text-xs text-bnpGrey-700; }
+.upload-success { @apply mt-2 text-sm text-bnpGreen font-medium text-center; }
+
+.field-grid { @apply grid grid-cols-1 md:grid-cols-2 gap-6; }
+.field-col { @apply flex flex-col; }
+.field-label { @apply text-xs font-bold text-bnpGrey-700 uppercase mb-1 ml-1; }
+.field-input {
+  @apply p-3 border border-bnpGrey-200 rounded-lg outline-none transition-all;
+  &:focus { @apply ring-2 ring-bnpGreen; }
+}
+
+.form-footer { @apply flex justify-end space-x-4; }
+.btn-cancel {
+  @apply px-6 py-3 text-bnpGrey-700 font-medium rounded-lg transition-all;
+  &:hover { @apply bg-bnpGrey-200; }
+}
+.btn-save {
+  @apply px-8 py-3 bg-bnpGreen text-white font-bold rounded-lg shadow-md transition-all transform;
+  &:hover { @apply bg-bnpGreen-dark -translate-y-1; }
+  &:disabled { @apply bg-gray-400; }
+}
+
+
+
+
+
+
+
+
+
+
+<div class="dashboard-wrapper">
+  <div class="dashboard-header">
+    <div>
+      <h2 class="dashboard-title">Pre-screening Pipeline</h2>
+      <p class="dashboard-subtitle">Manage and track cohort candidates</p>
+    </div>
+    <button routerLink="/intake" class="btn-add">
+      <svg class="add-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+      </svg>
+      <span>Add Candidate</span>
+    </button>
+  </div>
+
+  <div class="table-card">
+    <table class="candidate-table">
+      <thead class="table-head">
+        <tr>
+          <th class="th-cell">Candidate</th>
+          <th class="th-cell">Profile</th>
+          <th class="th-cell th-center">Test Status</th>
+          <th class="th-cell th-center">Score</th>
+          <th class="th-cell th-right">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="table-body">
+        <tr *ngFor="let c of candidates" class="table-row">
+          <td class="td-cell">
+            <div class="candidate-name">{{ c.CandidateName }}</div>
+            <div class="candidate-email">{{ c.CandidateEmail }}</div>
+          </td>
+          <td class="td-cell">
+            <span class="profile-tag">{{ c.Profile }}</span>
+          </td>
+          <td class="td-cell td-center">
+            <span [ngClass]="{
+              'status-pending': c.TestStatus === 'Pending',
+              'status-completed': c.TestStatus === 'Completed',
+              'status-none': !c.TestStatus
+            }" class="status-badge">
+              {{ c.TestStatus || 'Not Started' }}
+            </span>
+          </td>
+          <td class="td-cell td-center">
+            <input type="number" [(ngModel)]="c.PreScreeningScore"
+              class="score-input" *ngIf="c.TestStatus === 'Completed'">
+            <span *ngIf="c.TestStatus !== 'Completed'" class="score-empty">—</span>
+          </td>
+          <td class="td-cell td-right actions-cell">
+            <button (click)="editCandidate(c.Id)" class="link-edit">Edit</button>
+            <button (click)="triggerTest(c)" *ngIf="c.TestStatus !== 'Completed'" class="btn-outline">
+              Trigger Test
+            </button>
+            <button (click)="updateScore(c, c.PreScreeningScore, 'Selected')" class="btn-select">
+              Select
+            </button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
 </div>
 
-<!-- Office -->
-<iframe
-    *ngIf="safePreviewUrl"
-    [src]="safePreviewUrl"
-    sandbox="allow-forms allow-same-origin allow-scripts"
-    class="inline-preview-iframe">
-</iframe>
 
-npm install ngx-extended-pdf-viewer
+
+
+
+
+
+
+
+
+.dashboard-wrapper { @apply max-w-6xl mx-auto; }
+.dashboard-header { @apply flex justify-between items-end mb-8; }
+.dashboard-title { @apply text-3xl font-bold text-bnpGrey-900; }
+.dashboard-subtitle { @apply text-bnpGrey-700; }
+
+.btn-add {
+  @apply bg-bnpGreen text-white px-6 py-3 rounded-lg font-bold shadow-lg transition-all transform flex items-center space-x-2;
+  &:hover { @apply bg-bnpGreen-dark -translate-y-1; }
+}
+.add-icon { @apply w-5 h-5; }
+
+.table-card { @apply bg-white rounded-xl shadow-sm overflow-hidden border border-bnpGrey-200; }
+.candidate-table { @apply w-full text-left border-collapse; }
+.table-head { @apply bg-bnpGrey-100 border-b border-bnpGrey-200; }
+.th-cell { @apply p-4 text-xs font-bold text-bnpGrey-700 uppercase; }
+.th-center { @apply text-center; }
+.th-right { @apply text-right; }
+
+.table-body { @apply divide-y divide-bnpGrey-100; }
+.table-row {
+  @apply transition-colors;
+  &:hover { @apply bg-green-50; }
+}
+.td-cell { @apply p-4; }
+.td-center { @apply text-center; }
+.td-right { @apply text-right; }
+
+.candidate-name { @apply font-semibold text-bnpGrey-900; }
+.candidate-email { @apply text-xs text-bnpGrey-700; }
+.profile-tag { @apply text-sm text-bnpGrey-700 bg-bnpGrey-200 px-2 py-1 rounded; }
+
+.status-badge { @apply text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider; }
+.status-pending { @apply bg-yellow-100 text-yellow-700; }
+.status-completed { @apply bg-green-100 text-green-700; }
+.status-none { @apply bg-gray-100 text-gray-700; }
+
+.score-input {
+  @apply w-16 text-center p-1 border border-bnpGrey-200 rounded outline-none;
+  &:focus { @apply ring-1 ring-bnpGreen; }
+}
+.score-empty { @apply text-bnpGrey-200; }
+
+.actions-cell { @apply space-x-3; }
+.link-edit {
+  @apply text-bnpGrey-700 font-medium text-sm transition-colors;
+  &:hover { @apply text-bnpGreen; }
+}
+.btn-outline {
+  @apply bg-white border border-bnpGreen text-bnpGreen px-3 py-1 rounded-md text-xs font-bold transition-all;
+  &:hover { @apply bg-bnpGreen text-white; }
+}
+.btn-select {
+  @apply bg-bnpGreen text-white px-3 py-1 rounded-md text-xs font-bold shadow-sm transition-all;
+  &:hover { @apply bg-bnpGreen-dark; }
+}
+
+
+
+
+
+
+
+
+
+
