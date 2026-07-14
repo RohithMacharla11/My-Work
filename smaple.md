@@ -1,11 +1,4 @@
-Good — styling's fixed and the grid is finally rendering data. Now let's fix the real bugs (undefined values, broken workflow cell, missing filters) and rebuild this properly. Here's the full updated set.
-
-## Root causes in your screenshot
-
-1. **"undefined" under names** — your candidate-cell renderer references a field (likely `profile`/`location`) that SharePoint returned as `null`, with no fallback.
-2. **"null · Pending"** in Pre-Screen — same issue, no null-guarding.
-3. **`./workflow-pipeline-cell.component.html` showing as literal text** — this confirms `WorkflowPipelineCellComponent` isn't registering correctly as an AG Grid Angular cell renderer (a common integration issue). Fix: stop using an Angular component renderer for this cell — replace it with a plain HTML-string cell renderer function, exactly like your candidate cell already does. More reliable, no framework registration needed.
-4. **No filters, thin data, same-tab open** — addressed below.
+Good — wiring the visibility service in now, with a temporary override so everything's editable. Here's the full build: candidate detail page, workflow stepper, same-tab navigation, and a polished grid theme.
 
 ## Updated folder structure
 
@@ -13,670 +6,648 @@ Good — styling's fixed and the grid is finally rendering data. Now let's fix t
 src/app/
 ├── core/
 │   ├── models/
-│   │   ├── candidate.model.ts          (unchanged)
-│   │   ├── candidate-row.model.ts      (NEW — grid row w/ derived fields)
-│   │   ├── round-status.enum.ts        (unchanged)
-│   │   └── workflow-stage.enum.ts      (unchanged)
+│   │   ├── candidate-row.model.ts        (existing)
+│   │   ├── candidate.model.ts            (existing)
+│   │   ├── round-status.enum.ts          (existing)
+│   │   └── workflow-stage.enum.ts        (existing)
 │   └── services/
-│       ├── sharepoint.service.ts       (unchanged)
-│       ├── candidate.service.ts        (unchanged)
-│       ├── current-user.service.ts     (UPDATED — real SharePoint fetch)
-│       └── workflow-visibility.service.ts (unchanged)
-├── app.module.ts                       (UPDATED — APP_INITIALIZER)
-├── features/candidate-dashboard/
-│   ├── candidate-dashboard.component.ts    (REWRITTEN)
-│   ├── candidate-dashboard.component.html  (REWRITTEN)
-│   ├── candidate-dashboard.component.scss  (REWRITTEN)
-│   └── candidate-dashboard.module.ts       (unchanged)
+│       ├── workflow-visibility.service.ts (UPDATED — god-mode flag)
+│       └── ...(unchanged)
+├── features/
+│   ├── candidate-dashboard/
+│   │   ├── candidate-dashboard.component.ts    (UPDATED — same-tab nav)
+│   │   └── ...(rest unchanged)
+│   └── candidate-detail/                        (NEW)
+│       ├── candidate-detail.component.ts
+│       ├── candidate-detail.component.html
+│       ├── candidate-detail.component.scss
+│       ├── candidate-detail.module.ts
+│       └── components/
+│           ├── workflow-stepper/
+│           │   ├── workflow-stepper.component.ts
+│           │   ├── workflow-stepper.component.html
+│           │   └── workflow-stepper.component.scss
+│           ├── general-details-panel/
+│           │   ├── general-details-panel.component.ts
+│           │   ├── general-details-panel.component.html
+│           │   └── general-details-panel.component.scss
+│           ├── prescreen-panel/
+│           │   ├── prescreen-panel.component.ts
+│           │   ├── prescreen-panel.component.html
+│           │   └── prescreen-panel.component.scss
+│           └── tech-round-panel/
+│               ├── tech-round-panel.component.ts
+│               ├── tech-round-panel.component.html
+│               └── tech-round-panel.component.scss
+├── app-routing.module.ts                 (UPDATED)
+└── styles/
+    ├── _tokens.scss                      (existing)
+    └── _ag-grid-theme.scss               (NEW)
 ```
 
-## `core/models/candidate-row.model.ts` (new)
-
-```typescript
-import { Candidate } from './candidate.model';
-import { WorkflowStage } from './workflow-stage.enum';
-
-export interface CandidateRow extends Candidate {
-  currentStage: WorkflowStage;
-  currentStageLabel: string;
-}
-```
-
-## `core/services/current-user.service.ts` (updated — real fetch, runs at startup)
+## 1. `core/services/workflow-visibility.service.ts` (updated with god-mode)
 
 ```typescript
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { Observable, of } from 'rxjs';
-import { catchError, map } from 'rxjs/operators';
-import { RoundKey } from './workflow-visibility.service';
+import { Candidate, InterviewRound } from '../models/candidate.model';
+import { RoundStatus } from '../models/round-status.enum';
+import { CurrentUserService } from './current-user.service';
 
-export type UserRole = 'HrAdmin' | 'Recruiter' | 'Interviewer';
+export type RoundKey = 'techRound1' | 'techRound2Mgmt' | 'onShoreRound' | 'hrRound';
 
-export interface CurrentUser {
-  id: number;
-  title: string;
-  email: string;
-  role: UserRole;
-  assignedRound?: RoundKey;
+export interface RoundVisibility {
+  visible: boolean;
+  editable: boolean;
+  readOnly: boolean;
+  locked: boolean;
+  lockedMessage?: string;
 }
 
-// Map your real SharePoint group names here once confirmed
-const GROUP_ROLE_MAP: Record<string, UserRole> = {
-  'HR Cohort Team (Admin)': 'HrAdmin',
-  'HR Recruiters': 'Recruiter',
-  'Tech Interview Panel': 'Interviewer',
-  'Mgmt. Interview Panel': 'Interviewer',
-  'On Shore Interview Panel': 'Interviewer'
+const ROUND_SEQUENCE: RoundKey[] = ['techRound1', 'techRound2Mgmt', 'onShoreRound', 'hrRound'];
+
+const ROUND_LABEL: Record<RoundKey, string> = {
+  techRound1: 'Tech Round 1',
+  techRound2Mgmt: 'Tech 2 / Management',
+  onShoreRound: 'On-Shore Round',
+  hrRound: 'HR Round'
 };
 
 @Injectable({ providedIn: 'root' })
-export class CurrentUserService {
-  private readonly siteUrl = '/sites/CohortHiring';
+export class WorkflowVisibilityService {
 
-  private user: CurrentUser = {
-    id: 0,
-    title: 'Loading...',
-    email: '',
-    role: 'Interviewer'
-  };
+  /**
+   * TEMP: while permissions aren't finalized, everything is visible and
+   * editable for everyone. Flip this to false once role-based access
+   * is ready to switch on — no other code needs to change.
+   */
+  readonly godModeEnabled = true;
 
-  constructor(private http: HttpClient) {}
+  constructor(private currentUser: CurrentUserService) {}
 
-  get(): CurrentUser {
-    return this.user;
-  }
+  isRoundUnlocked(candidate: Candidate, round: RoundKey): boolean {
+    if (this.godModeEnabled) return true;
 
-  /** Called once at app startup via APP_INITIALIZER. */
-  loadCurrentUser(): Observable<CurrentUser> {
-    const headers = new HttpHeaders({ 'Accept': 'application/json;odata=verbose' });
-
-    return this.http.get<any>(`${this.siteUrl}/_api/web/currentuser`, { headers }).pipe(
-      map(res => {
-        this.user = {
-          id: res.d.Id,
-          title: res.d.Title,
-          email: res.d.Email,
-          role: 'Interviewer'
-        };
-        return this.user;
-      }),
-      catchError(() => {
-        this.user = { id: 0, title: 'Unknown User', email: '', role: 'Interviewer' };
-        return of(this.user);
-      })
-    );
-  }
-
-  private resolveRole(groupNames: string[]): UserRole {
-    for (const name of groupNames) {
-      if (GROUP_ROLE_MAP[name]) return GROUP_ROLE_MAP[name];
+    const index = ROUND_SEQUENCE.indexOf(round);
+    if (index === 0) {
+      return candidate.prescreeningSelected === RoundStatus.Selected;
     }
-    return 'Interviewer';
+    const previousRound = ROUND_SEQUENCE[index - 1];
+    return this.getRound(candidate, previousRound).selection === RoundStatus.Selected;
+  }
+
+  isPipelineTerminated(candidate: Candidate, upToRound: RoundKey): boolean {
+    if (this.godModeEnabled) return false;
+
+    const index = ROUND_SEQUENCE.indexOf(upToRound);
+    if (candidate.prescreeningSelected === RoundStatus.Rejected) return true;
+    for (let i = 0; i < index; i++) {
+      if (this.getRound(candidate, ROUND_SEQUENCE[i]).selection === RoundStatus.Rejected) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  getVisibilityFor(candidate: Candidate, round: RoundKey): RoundVisibility {
+    if (this.godModeEnabled) {
+      return { visible: true, editable: true, readOnly: false, locked: false };
+    }
+
+    const user = this.currentUser.get();
+
+    if (user.role === 'HrAdmin' || user.role === 'Recruiter') {
+      return {
+        visible: true,
+        editable: user.role === 'HrAdmin' && round === 'hrRound' && this.isRoundUnlocked(candidate, round),
+        readOnly: user.role === 'Recruiter',
+        locked: false
+      };
+    }
+
+    const assignedRoundIndex = ROUND_SEQUENCE.indexOf(user.assignedRound as RoundKey);
+    const thisRoundIndex = ROUND_SEQUENCE.indexOf(round);
+
+    if (thisRoundIndex > assignedRoundIndex) {
+      return { visible: false, editable: false, readOnly: false, locked: false };
+    }
+
+    if (thisRoundIndex < assignedRoundIndex) {
+      return { visible: true, editable: false, readOnly: true, locked: false };
+    }
+
+    if (this.isPipelineTerminated(candidate, round)) {
+      return { visible: true, editable: false, readOnly: true, locked: false };
+    }
+
+    if (!this.isRoundUnlocked(candidate, round)) {
+      const prevLabel = thisRoundIndex === 0 ? 'Pre-Screen' : ROUND_LABEL[ROUND_SEQUENCE[thisRoundIndex - 1]];
+      return {
+        visible: true, editable: false, readOnly: false, locked: true,
+        lockedMessage: `Waiting for ${prevLabel} to complete.`
+      };
+    }
+
+    const alreadySubmitted = this.getRound(candidate, round).selection !== RoundStatus.Pending;
+    return { visible: true, editable: !alreadySubmitted, readOnly: alreadySubmitted, locked: false };
+  }
+
+  private getRound(candidate: Candidate, key: RoundKey): InterviewRound {
+    return candidate[key];
   }
 }
 ```
 
-## `app.module.ts` (updated — loads user before app renders)
+## 2. `app-routing.module.ts` (updated)
 
 ```typescript
-import { NgModule, APP_INITIALIZER } from '@angular/core';
-import { BrowserModule } from '@angular/platform-browser';
-import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
-import { HttpClientModule } from '@angular/common/http';
-import { FormsModule } from '@angular/forms';
+import { NgModule } from '@angular/core';
+import { RouterModule, Routes } from '@angular/router';
 
-import { AppRoutingModule } from './app-routing.module';
-import { AppComponent } from './app.component';
-import { SharedModule } from './shared/shared.module';
-import { CurrentUserService } from './core/services/current-user.service';
-
-export function initializeUser(userService: CurrentUserService) {
-  return () => userService.loadCurrentUser().toPromise();
-}
+const routes: Routes = [
+  { path: '', redirectTo: 'dashboard', pathMatch: 'full' },
+  {
+    path: 'dashboard',
+    loadChildren: () => import('./features/candidate-dashboard/candidate-dashboard.module')
+      .then(m => m.CandidateDashboardModule)
+  },
+  {
+    path: 'candidates/:source/:id',
+    loadChildren: () => import('./features/candidate-detail/candidate-detail.module')
+      .then(m => m.CandidateDetailModule)
+  },
+  { path: '**', redirectTo: 'dashboard' }
+];
 
 @NgModule({
-  declarations: [AppComponent],
-  imports: [
-    BrowserModule,
-    BrowserAnimationsModule,
-    HttpClientModule,
-    FormsModule,
-    SharedModule,
-    AppRoutingModule
-  ],
-  providers: [
-    {
-      provide: APP_INITIALIZER,
-      useFactory: initializeUser,
-      deps: [CurrentUserService],
-      multi: true
-    }
-  ],
-  bootstrap: [AppComponent]
+  imports: [RouterModule.forRoot(routes)],
+  exports: [RouterModule]
 })
-export class AppModule {}
+export class AppRoutingModule {}
 ```
 
-## `candidate-dashboard.component.ts` (full rewrite)
+## 3. Dashboard — fix `openCandidate` to same-tab nav
+
+In `candidate-dashboard.component.ts`, replace the `openCandidate` method:
+
+```typescript
+openCandidate(candidate: CandidateRow): void {
+  this.router.navigate(['/candidates', candidate.listSource, candidate.id]);
+}
+```
+
+(Remove the `window.open` / `serializeUrl` version from before — that was wrong per your correction.)
+
+## 4. `candidate-detail.module.ts`
+
+```typescript
+import { NgModule } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { RouterModule, Routes } from '@angular/router';
+
+import { SharedModule } from '../../shared/shared.module';
+import { CandidateDetailComponent } from './candidate-detail.component';
+import { WorkflowStepperComponent } from './components/workflow-stepper/workflow-stepper.component';
+import { GeneralDetailsPanelComponent } from './components/general-details-panel/general-details-panel.component';
+import { PrescreenPanelComponent } from './components/prescreen-panel/prescreen-panel.component';
+import { TechRoundPanelComponent } from './components/tech-round-panel/tech-round-panel.component';
+
+const routes: Routes = [
+  { path: '', component: CandidateDetailComponent }
+];
+
+@NgModule({
+  declarations: [
+    CandidateDetailComponent,
+    WorkflowStepperComponent,
+    GeneralDetailsPanelComponent,
+    PrescreenPanelComponent,
+    TechRoundPanelComponent
+  ],
+  imports: [
+    CommonModule,
+    FormsModule,
+    SharedModule,
+    RouterModule.forChild(routes)
+  ]
+})
+export class CandidateDetailModule {}
+```
+
+## 5. `candidate-detail.component.ts`
 
 ```typescript
 import { Component, OnInit } from '@angular/core';
-import { Router } from '@angular/router';
-import { ColDef, GridOptions, GridApi, GridReadyEvent } from 'ag-grid-community';
-
+import { ActivatedRoute, Router } from '@angular/router';
 import { CandidateService } from '../../core/services/candidate.service';
-import { CandidateRow } from '../../core/models/candidate-row.model';
-import { WorkflowStage, WORKFLOW_STAGE_LABEL, WORKFLOW_STAGE_ORDER } from '../../core/models/workflow-stage.enum';
+import { WorkflowVisibilityService, RoundKey } from '../../core/services/workflow-visibility.service';
+import { Candidate } from '../../core/models/candidate.model';
+import { WorkflowStage, WORKFLOW_STAGE_LABEL } from '../../core/models/workflow-stage.enum';
+
+export type DetailTab = 'general' | 'preScreen' | RoundKey;
 
 @Component({
-  selector: 'app-candidate-dashboard',
-  templateUrl: './candidate-dashboard.component.html',
-  styleUrls: ['./candidate-dashboard.component.scss']
+  selector: 'app-candidate-detail',
+  templateUrl: './candidate-detail.component.html',
+  styleUrls: ['./candidate-detail.component.scss']
 })
-export class CandidateDashboardComponent implements OnInit {
+export class CandidateDetailComponent implements OnInit {
 
-  private allCandidates: CandidateRow[] = [];
-  rowData: CandidateRow[] = [];
-
-  quickFilterText = '';
-  stageFilter = 'all';
-  profileFilter = 'all';
-  locationFilter = 'all';
-
-  profileOptions: string[] = [];
-  locationOptions: string[] = [];
-  stageOptions = WORKFLOW_STAGE_ORDER.map(s => ({ value: s, label: WORKFLOW_STAGE_LABEL[s] }));
-
+  candidate: Candidate | null = null;
+  currentStage: WorkflowStage | null = null;
   loading = true;
   errorMessage: string | null = null;
-  gridApi!: GridApi;
 
-  // Summary counts for the top stat strip
-  stats = { total: 0, active: 0, offer: 0, rejected: 0 };
-
-  columnDefs: ColDef[] = [
-    {
-      headerName: 'Candidate',
-      field: 'candidateName',
-      flex: 2,
-      minWidth: 220,
-      cellRenderer: (params: any) => {
-        const name = params.data.candidateName || 'Unnamed Candidate';
-        const email = params.data.candidateEmailId || 'No email on file';
-        const id = params.data.candidateId || '—';
-        return `
-          <div class="candidate-cell">
-            <div class="avatar">${this.initials(name)}</div>
-            <div class="candidate-meta">
-              <div class="name">${name}</div>
-              <div class="sub">${email} · ID ${id}</div>
-            </div>
-          </div>`;
-      }
-    },
-    {
-      headerName: 'Role / Profile',
-      flex: 1.3,
-      minWidth: 170,
-      valueGetter: (p) => {
-        const role = p.data.roleDesignation || '—';
-        const profile = p.data.profile || '—';
-        return `${role} · ${profile}`;
-      }
-    },
-    {
-      headerName: 'Location',
-      field: 'location',
-      flex: 0.8,
-      minWidth: 110,
-      valueFormatter: (p) => p.value || '—'
-    },
-    {
-      headerName: 'Pre-Screen',
-      flex: 1,
-      minWidth: 140,
-      cellRenderer: (params: any) => {
-        const score = params.data.prescreeningScore;
-        const result = params.data.prescreeningSelected;
-        if (!score && !result) {
-          return `<span class="muted-pill">Not started</span>`;
-        }
-        const cls = result === 'Selected' ? 'pass' : result === 'Rejected' ? 'reject' : 'wait';
-        return `<span class="score-pill">${score ?? '—'}/100</span>
-                <span class="chip chip--${cls}">${result || 'Pending'}</span>`;
-      }
-    },
-    {
-      headerName: 'Biz Line',
-      field: 'allocatedBizLine',
-      flex: 0.9,
-      minWidth: 130,
-      valueFormatter: (p) => p.value || '—'
-    },
-    {
-      headerName: 'Workflow',
-      flex: 1.6,
-      minWidth: 200,
-      cellRenderer: (params: any) => {
-        const stage: WorkflowStage = params.data.currentStage;
-        const isRejected = stage === WorkflowStage.Rejected;
-        const label = isRejected ? 'Rejected' : WORKFLOW_STAGE_LABEL[stage];
-        const currentIdx = WORKFLOW_STAGE_ORDER.indexOf(stage);
-
-        const dots = WORKFLOW_STAGE_ORDER.map((s, i) => {
-          let cls = 'todo';
-          if (!isRejected) {
-            if (i < currentIdx) cls = 'done';
-            else if (i === currentIdx) cls = 'current';
-          } else {
-            cls = 'rejected';
-          }
-          return `<span class="wf-dot wf-dot--${cls}"></span>`;
-        }).join('');
-
-        return `
-          <div class="wf-cell">
-            <div class="wf-dots">${dots}</div>
-            <div class="wf-label ${isRejected ? 'wf-label--rejected' : ''}">${label}</div>
-          </div>`;
-      }
-    },
-    {
-      headerName: '',
-      flex: 0.7,
-      minWidth: 90,
-      sortable: false,
-      filter: false,
-      cellRenderer: () => `<button class="open-btn">Open ↗</button>`,
-      onCellClicked: (params) => this.openCandidate(params.data)
-    }
-  ];
-
-  gridOptions: GridOptions = {
-    rowHeight: 68,
-    headerHeight: 44,
-    suppressCellFocus: true,
-    domLayout: 'autoHeight',
-    animateRows: true
-  };
+  activeTab: DetailTab = 'general';
 
   constructor(
+    private route: ActivatedRoute,
+    private router: Router,
     private candidateService: CandidateService,
-    private router: Router
+    public visibility: WorkflowVisibilityService
   ) {}
 
   ngOnInit(): void {
-    this.loadCandidates();
+    const source = this.route.snapshot.paramMap.get('source') as 'Chennai' | 'Mumbai';
+    const id = Number(this.route.snapshot.paramMap.get('id'));
+    this.loadCandidate(source, id);
   }
 
-  loadCandidates(): void {
+  private loadCandidate(source: 'Chennai' | 'Mumbai', id: number): void {
     this.loading = true;
     this.errorMessage = null;
 
     this.candidateService.getAllCandidates().subscribe({
       next: (candidates) => {
-        this.allCandidates = candidates.map(c => {
-          const stage = this.candidateService.getCurrentStage(c);
-          return { ...c, currentStage: stage, currentStageLabel: WORKFLOW_STAGE_LABEL[stage] } as CandidateRow;
-        });
-
-        this.profileOptions = [...new Set(this.allCandidates.map(c => c.profile).filter(Boolean))];
-        this.locationOptions = [...new Set(this.allCandidates.map(c => c.location).filter(Boolean))];
-
-        this.computeStats();
-        this.applyFilters();
+        const found = candidates.find(c => c.listSource === source && c.id === id);
+        if (!found) {
+          this.errorMessage = 'Candidate not found.';
+          this.loading = false;
+          return;
+        }
+        this.candidate = found;
+        this.currentStage = this.candidateService.getCurrentStage(found);
         this.loading = false;
       },
       error: () => {
-        this.errorMessage = 'This query is too large for SharePoint to run. A column used in the filter needs to be indexed.';
+        this.errorMessage = 'Could not load candidate details from SharePoint.';
         this.loading = false;
       }
     });
   }
 
-  onGridReady(params: GridReadyEvent): void {
-    this.gridApi = params.api;
+  setActiveTab(tab: DetailTab): void {
+    this.activeTab = tab;
   }
 
-  onSearchChange(): void {
-    this.applyFilters();
+  goBack(): void {
+    this.router.navigate(['/dashboard']);
   }
 
-  onFilterChange(): void {
-    this.applyFilters();
-  }
-
-  resetFilters(): void {
-    this.quickFilterText = '';
-    this.stageFilter = 'all';
-    this.profileFilter = 'all';
-    this.locationFilter = 'all';
-    this.applyFilters();
-  }
-
-  private applyFilters(): void {
-    const q = this.quickFilterText.trim().toLowerCase();
-
-    this.rowData = this.allCandidates.filter(c => {
-      const matchesSearch = !q || [
-        c.candidateName, c.candidateEmailId, c.candidatePhoneNumber,
-        c.candidateId, c.roleDesignation, c.profile, c.location
-      ].some(field => (field || '').toLowerCase().includes(q));
-
-      const matchesStage = this.stageFilter === 'all' || c.currentStage === this.stageFilter;
-      const matchesProfile = this.profileFilter === 'all' || c.profile === this.profileFilter;
-      const matchesLocation = this.locationFilter === 'all' || c.location === this.locationFilter;
-
-      return matchesSearch && matchesStage && matchesProfile && matchesLocation;
-    });
-  }
-
-  private computeStats(): void {
-    this.stats.total = this.allCandidates.length;
-    this.stats.rejected = this.allCandidates.filter(c => c.currentStage === WorkflowStage.Rejected).length;
-    this.stats.offer = this.allCandidates.filter(c => c.currentStage === WorkflowStage.OfferStage).length;
-    this.stats.active = this.stats.total - this.stats.rejected - this.stats.offer;
-  }
-
-  openCandidate(candidate: CandidateRow): void {
-    const url = this.router.serializeUrl(
-      this.router.createUrlTree(['/candidates', candidate.listSource, candidate.id])
-    );
-    window.open(url, '_blank');
-  }
-
-  private initials(name: string): string {
-    return name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+  get stageLabel(): string {
+    return this.currentStage ? WORKFLOW_STAGE_LABEL[this.currentStage] : '';
   }
 }
 ```
 
-## `candidate-dashboard.component.html` (full rewrite)
+## 6. `candidate-detail.component.html`
 
 ```html
-<div class="dashboard-container">
+<div class="detail-page">
 
-  <header class="dashboard-header">
-    <h4>Recruitment Pipeline</h4>
-    <h1>Candidates</h1>
-  </header>
-
-  <div class="stat-strip" *ngIf="!loading && !errorMessage">
-    <div class="stat-card">
-      <div class="stat-value">{{ stats.total }}</div>
-      <div class="stat-label">Total Candidates</div>
-    </div>
-    <div class="stat-card stat-card--active">
-      <div class="stat-value">{{ stats.active }}</div>
-      <div class="stat-label">In Progress</div>
-    </div>
-    <div class="stat-card stat-card--pass">
-      <div class="stat-value">{{ stats.offer }}</div>
-      <div class="stat-label">Offer Stage</div>
-    </div>
-    <div class="stat-card stat-card--reject">
-      <div class="stat-value">{{ stats.rejected }}</div>
-      <div class="stat-label">Rejected</div>
-    </div>
-  </div>
-
-  <div class="dashboard-toolbar" *ngIf="!loading && !errorMessage">
-    <input
-      type="text"
-      class="search-input"
-      placeholder="Search name, email, phone, ID, role, profile or location..."
-      [(ngModel)]="quickFilterText"
-      (ngModelChange)="onSearchChange()" />
-
-    <select class="filter-select" [(ngModel)]="stageFilter" (ngModelChange)="onFilterChange()">
-      <option value="all">All Stages</option>
-      <option *ngFor="let s of stageOptions" [value]="s.value">{{ s.label }}</option>
-    </select>
-
-    <select class="filter-select" [(ngModel)]="profileFilter" (ngModelChange)="onFilterChange()">
-      <option value="all">All Profiles</option>
-      <option *ngFor="let p of profileOptions" [value]="p">{{ p }}</option>
-    </select>
-
-    <select class="filter-select" [(ngModel)]="locationFilter" (ngModelChange)="onFilterChange()">
-      <option value="all">All Locations</option>
-      <option *ngFor="let l of locationOptions" [value]="l">{{ l }}</option>
-    </select>
-
-    <button class="reset-btn" (click)="resetFilters()">Reset</button>
+  <div class="detail-topbar">
+    <button class="back-link" (click)="goBack()">← Back to Candidates</button>
   </div>
 
   <div *ngIf="loading" class="state-panel">
     <div class="spinner"></div>
-    <p>Searching SharePoint...</p>
+    <p>Loading candidate...</p>
   </div>
 
   <div *ngIf="errorMessage" class="state-panel state-panel--error">
-    <p class="state-title">Something went wrong</p>
-    <p class="state-detail">{{ errorMessage }}</p>
-    <button (click)="loadCandidates()">Try again</button>
+    <p class="state-title">{{ errorMessage }}</p>
   </div>
 
-  <div *ngIf="!loading && !errorMessage && rowData.length === 0" class="state-panel">
-    <p class="state-title">No candidates match</p>
-    <p class="state-detail">Try adjusting your search or filters.</p>
-    <button (click)="resetFilters()">Clear filters</button>
-  </div>
+  <ng-container *ngIf="candidate && !loading">
 
-  <ag-grid-angular
-    *ngIf="!loading && !errorMessage && rowData.length > 0"
-    class="ag-theme-alpine cohort-grid"
-    [rowData]="rowData"
-    [columnDefs]="columnDefs"
-    [gridOptions]="gridOptions"
-    (gridReady)="onGridReady($event)">
-  </ag-grid-angular>
+    <div class="candidate-hero">
+      <div class="hero-avatar">{{ candidate.candidateName.split(' ').map(n => n[0]).join('').substring(0,2).toUpperCase() }}</div>
+      <div class="hero-info">
+        <h1>{{ candidate.candidateName }}</h1>
+        <div class="hero-meta">
+          <span>{{ candidate.candidateEmailId || '—' }}</span>
+          <span class="dot">·</span>
+          <span>{{ candidate.candidatePhoneNumber || '—' }}</span>
+          <span class="dot">·</span>
+          <span>{{ candidate.location || '—' }}</span>
+          <span class="dot">·</span>
+          <span>{{ candidate.roleDesignation }} · {{ candidate.profile }}</span>
+        </div>
+      </div>
+      <div class="hero-id">
+        <div class="id-label">ID</div>
+        <div class="id-value">{{ candidate.candidateId }}</div>
+      </div>
+    </div>
 
+    <app-workflow-stepper
+      [candidate]="candidate"
+      [activeTab]="activeTab"
+      (tabSelected)="setActiveTab($event)">
+    </app-workflow-stepper>
+
+    <div class="detail-content">
+      <app-general-details-panel *ngIf="activeTab === 'general'" [candidate]="candidate"></app-general-details-panel>
+      <app-prescreen-panel *ngIf="activeTab === 'preScreen'" [candidate]="candidate"></app-prescreen-panel>
+      <app-tech-round-panel *ngIf="activeTab === 'techRound1'" [candidate]="candidate" roundKey="techRound1"></app-tech-round-panel>
+      <app-tech-round-panel *ngIf="activeTab === 'techRound2Mgmt'" [candidate]="candidate" roundKey="techRound2Mgmt"></app-tech-round-panel>
+      <app-tech-round-panel *ngIf="activeTab === 'onShoreRound'" [candidate]="candidate" roundKey="onShoreRound"></app-tech-round-panel>
+      <app-tech-round-panel *ngIf="activeTab === 'hrRound'" [candidate]="candidate" roundKey="hrRound"></app-tech-round-panel>
+    </div>
+
+  </ng-container>
 </div>
 ```
 
-## `candidate-dashboard.component.scss` (full rewrite)
+## 7. `candidate-detail.component.scss`
 
 ```scss
-.dashboard-container {
-  padding: 24px 28px;
+.detail-page {
+  padding: 24px 32px 48px;
   background: var(--cohort-canvas);
   min-height: 100%;
 }
 
-.dashboard-header h4 {
-  color: var(--cohort-muted);
-  text-transform: uppercase;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  margin: 0;
+.detail-topbar {
+  margin-bottom: 16px;
 }
 
-.dashboard-header h1 {
-  color: var(--cohort-text);
-  margin: 4px 0 20px;
-  font-size: 26px;
+.back-link {
+  background: none;
+  border: none;
+  color: var(--cohort-primary);
+  font-weight: 600;
+  font-size: 13.5px;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 0.15s ease;
+
+  &:hover { opacity: 0.7; }
 }
 
-.stat-strip {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+.candidate-hero {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  background: white;
+  border: 1px solid var(--cohort-border);
+  border-radius: 12px;
+  padding: 20px 24px;
   margin-bottom: 20px;
 }
 
-.stat-card {
-  background: white;
-  border: 1px solid var(--cohort-border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-
-  &:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 14px rgba(0,0,0,0.06);
-  }
-
-  .stat-value { font-size: 22px; font-weight: 700; color: var(--cohort-text); }
-  .stat-label { font-size: 12px; color: var(--cohort-muted); margin-top: 2px; }
-
-  &--active .stat-value { color: #8A6D00; }
-  &--pass .stat-value { color: var(--cohort-primary); }
-  &--reject .stat-value { color: var(--status-reject-text); }
-}
-
-.dashboard-toolbar {
+.hero-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: var(--cohort-primary);
+  color: white;
+  font-size: 20px;
+  font-weight: 700;
   display: flex;
-  gap: 10px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
-.search-input {
+.hero-info {
   flex: 1;
-  min-width: 260px;
-  padding: 10px 14px;
-  border: 1px solid var(--cohort-border);
-  border-radius: 8px;
-  font-size: 14px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 
-  &:focus {
-    outline: none;
-    border-color: var(--cohort-primary);
-    box-shadow: 0 0 0 3px var(--status-pass-bg);
-  }
-}
+  h1 { margin: 0 0 4px; font-size: 20px; color: var(--cohort-text); }
 
-.filter-select {
-  padding: 10px 12px;
-  border: 1px solid var(--cohort-border);
-  border-radius: 8px;
-  font-size: 13px;
-  background: white;
-  color: var(--cohort-text);
-  cursor: pointer;
-
-  &:focus { outline: none; border-color: var(--cohort-primary); }
-}
-
-.reset-btn {
-  padding: 10px 16px;
-  border: 1px solid var(--cohort-border);
-  border-radius: 8px;
-  background: white;
-  color: var(--cohort-muted);
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 13px;
-  transition: all 0.15s ease;
-
-  &:hover { border-color: var(--cohort-primary); color: var(--cohort-primary); }
-}
-
-.cohort-grid {
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid var(--cohort-border);
-}
-
-::ng-deep {
-  .candidate-cell {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    height: 100%;
-
-    .avatar {
-      width: 34px;
-      height: 34px;
-      border-radius: 9px;
-      background: var(--cohort-primary);
-      color: white;
-      font-size: 12px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
-
-    .name { font-weight: 600; color: var(--cohort-text); font-size: 13.5px; }
-    .sub { font-size: 11.5px; color: var(--cohort-muted); margin-top: 1px; }
-  }
-
-  .muted-pill {
-    font-size: 12px;
-    color: var(--cohort-muted);
-  }
-
-  .score-pill {
-    display: inline-block;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--cohort-text);
-    margin-right: 6px;
-  }
-
-  .chip {
-    display: inline-flex;
-    padding: 2px 10px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 600;
-
-    &--pass { background: var(--status-pass-bg); color: var(--status-pass-text); }
-    &--reject { background: var(--status-reject-bg); color: var(--status-reject-text); }
-    &--wait { background: var(--status-wait-bg); color: var(--status-wait-text); }
-  }
-
-  .wf-cell {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    height: 100%;
-  }
-
-  .wf-dots {
-    display: flex;
-    gap: 4px;
-    margin-bottom: 4px;
-  }
-
-  .wf-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--cohort-border);
-    transition: background 0.2s ease;
-
-    &--done, &--current { background: var(--cohort-primary); }
-    &--rejected { background: var(--status-reject-text); }
-  }
-
-  .wf-label {
-    font-size: 12px;
+  .hero-meta {
+    font-size: 13px;
     color: var(--cohort-muted);
 
-    &--rejected { color: var(--status-reject-text); }
+    .dot { margin: 0 6px; }
   }
+}
 
-  .open-btn {
-    background: transparent;
-    color: var(--cohort-primary);
-    border: 1px solid var(--cohort-primary);
-    border-radius: 6px;
-    padding: 5px 12px;
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 12px;
-    transition: all 0.15s ease;
+.hero-id {
+  text-align: right;
+  .id-label { font-size: 10px; text-transform: uppercase; color: var(--cohort-muted); letter-spacing: 0.05em; }
+  .id-value { font-weight: 700; color: var(--cohort-text); font-size: 14px; }
+}
 
-    &:hover { background: var(--cohort-primary); color: white; }
-  }
+.detail-content {
+  margin-top: 20px;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .state-panel {
   text-align: center;
-  padd
+  padding: 80px 0;
+  color: var(--cohort-muted);
+
+  &--error { color: var(--status-reject-text); }
+}
+
+.spinner {
+  width: 28px; height: 28px;
+  border: 3px solid var(--cohort-border);
+  border-top-color: var(--cohort-primary);
+  border-radius: 50%;
+  margin: 0 auto 12px;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+```
+
+## 8. `components/workflow-stepper/workflow-stepper.component.ts`
+
+```typescript
+import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Candidate } from '../../../../core/models/candidate.model';
+import { WorkflowVisibilityService, RoundKey } from '../../../../core/services/workflow-visibility.service';
+import { CandidateService } from '../../../../core/services/candidate.service';
+import { DetailTab } from '../../candidate-detail.component';
+
+interface StepDef {
+  tab: DetailTab;
+  label: string;
+  roundKey?: RoundKey;
+}
+
+const STEPS: StepDef[] = [
+  { tab: 'preScreen', label: 'Pre-Screen' },
+  { tab: 'techRound1', label: 'Tech Round 1', roundKey: 'techRound1' },
+  { tab: 'techRound2Mgmt', label: 'Tech 2 / Mgmt', roundKey: 'techRound2Mgmt' },
+  { tab: 'onShoreRound', label: 'On-Shore', roundKey: 'onShoreRound' },
+  { tab: 'hrRound', label: 'HR Final', roundKey: 'hrRound' }
+];
+
+@Component({
+  selector: 'app-workflow-stepper',
+  templateUrl: './workflow-stepper.component.html',
+  styleUrls: ['./workflow-stepper.component.scss']
+})
+export class WorkflowStepperComponent {
+  @Input() candidate!: Candidate;
+  @Input() activeTab!: DetailTab;
+  @Output() tabSelected = new EventEmitter<DetailTab>();
+
+  steps = STEPS;
+
+  constructor(
+    private visibility: WorkflowVisibilityService,
+    private candidateService: CandidateService
+  ) {}
+
+  select(step: StepDef): void {
+    this.tabSelected.emit(step.tab);
+  }
+
+  isLocked(step: StepDef): boolean {
+    if (!step.roundKey) return false;
+    const v = this.visibility.getVisibilityFor(this.candidate, step.roundKey);
+    return v.locked || !v.visible;
+  }
+
+  status(step: StepDef): 'done' | 'current' | 'rejected' | 'todo' {
+    if (!step.roundKey) {
+      return this.candidate.prescreeningSelected === 'Selected' ? 'done' : 'current';
+    }
+    const round = this.candidate[step.roundKey];
+    if (round.selection === 'Selected') return 'done';
+    if (round.selection === 'Rejected') return 'rejected';
+    const v = this.visibility.getVisibilityFor(this.candidate, step.roundKey);
+    return v.editable || v.readOnly ? 'current' : 'todo';
+  }
+}
+```
+
+## 9. `workflow-stepper.component.html`
+
+```html
+<div class="stepper">
+  <div
+    *ngFor="let step of steps; let last = last"
+    class="step"
+    [class.step--active]="activeTab === step.tab"
+    [class.step--locked]="isLocked(step)"
+    (click)="!isLocked(step) && select(step)">
+
+    <div class="step-node" [ngClass]="'step-node--' + status(step)">
+      <span *ngIf="status(step) === 'done'">✓</span>
+      <span *ngIf="status(step) === 'rejected'">✕</span>
+      <span *ngIf="isLocked(step) && status(step) === 'todo'">🔒</span>
+    </div>
+    <div class="step-label">{{ step.label }}</div>
+
+    <div class="step-connector" *ngIf="!last"></div>
+  </div>
+</div>
+```
+
+## 10. `workflow-stepper.component.scss`
+
+```scss
+.stepper {
+  display: flex;
+  align-items: flex-start;
+  background: white;
+  border: 1px solid var(--cohort-border);
+  border-radius: 12px;
+  padding: 20px 28px;
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  flex: 1;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+
+  &--locked {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  &--active .step-label {
+    color: var(--cohort-primary);
+    font-weight: 700;
+  }
+}
+
+.step-node {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  z-index: 1;
+  transition: all 0.2s ease;
+
+  &--done { background: var(--cohort-primary); color: white; }
+  &--current { background: var(--status-wait-bg); color: var(--status-wait-text); border: 2px solid var(--cohort-primary); }
+  &--rejected { background: var(--status-reject-bg); color: var(--status-reject-text); }
+  &--todo { background: var(--cohort-border); color: var(--cohort-muted); }
+}
+
+.step-label {
+  font-size: 12.5px;
+  color: var(--cohort-muted);
+  text-align: center;
+}
+
+.step-connector {
+  position: absolute;
+  top: 17px;
+  left: 50%;
+  width: 100%;
+  height: 2px;
+  background: var(--cohort-border);
+  z-index: 0;
+}
+```
+
+## 11. `components/general-details-panel/general-details-panel.component.ts`
+
+```typescript
+import { Component, Input } from '@angular/core';
+import { Candidate } from '../../../../core/models/candidate.model';
+
+@Component({
+  selector: 'app-general-details-panel',
+  templateUrl: './general-details-panel.component.html',
+  styleUrls: ['./general-details-panel.component.scss']
+})
+export class GeneralDetailsPanelComponent {
+  @Input() candidate!: Candidate;
+}
+```
+
+## 12. `general-details-panel.component.html`
+
+```html
+<div class="panel">
+  <h3>Candidate Details</h3>
+  <div class="detail-grid">
+    <div class="detail-field"><label>Candidate ID</label><span>{{ candidate.candidateId || '—' }}</span></div>
+    <div class="detail-field"><label>Full Name</label><span>{{ candidate.candidateName || '—' }}</span></div>
+    <div class="detail-field"><label>Email</label><span>{{ candidate.candidateEmailId || '—' }}</span></div>
+    <div class="detail-field"><label>Phone</label><span>{{ candidate.candidatePhoneNumber || '—' }}</span></div>
+    <div class="detail-field"><label>Location</label><span>{{ candidate.location || '—' }}</span></div>
+    <div class="detail-field"><label>Role / Designation</
