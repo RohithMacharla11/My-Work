@@ -1,26 +1,235 @@
-const SELECT_FIELDS = [
-  'Id', 'CandidateId', 'CandidateName', 'CandidateEmailId', 'CandidatePhoneNumber',
-  'Location', 'RoleDesignation', 'Profile', 'AllocatedBizLine',
-  'PrescreeningTestLink', 'PrescreeningTestDate', 'PrescreeningScore',
-  'PrescreeningSelected', 'PrescreeningComments',
-  'SkillOne', 'SkillOneScore', 'SkillOneTROne', 'SkillOneTRTwo',
-  'SkillTwo', 'SkillTwoScore', 'SkillTwoTROne', 'SkillTwoTRTwo',
-  'SkillThree', 'SkillThreeScore', 'SkillThreeTROne', 'SkillThreeTRTwo',
-  'SkillFour', 'SkillFourScore', 'SkillFourTROne', 'SkillFourTRTwo',
-  'SkillFive', 'SkillFiveScore', 'SkillFiveTROne', 'SkillFiveTRTwo',
-  'TechRound1InterviewDate', 'TechRound1InterviewFeedback', 'TechRound1InterviewSelection',
-  'Tech2MgmtRoundInterviewDate', 'Tech2MgmtRoundInterviewFeedback', 'Tech2MgmtRoundInterviewSelection',
-  'OnShoreRoundInterviewDate', 'OnShoreRoundInterviewFeedback', 'OnShoreRoundInterviewSelection',
-  'HrRoundInterviewDate', 'HrRoundInterviewFeedback', 'HrRoundInterviewSelection',
-  'CvUpload', 'HireproResultsUpload',
-  // User fields — select their sub-properties, not the bare field name
-  'TechRound1InterviewedBy/Id', 'TechRound1InterviewedBy/Title', 'TechRound1InterviewedBy/EMail',
-  'Tech2MgmtRoundInterviewedBy/Id', 'Tech2MgmtRoundInterviewedBy/Title', 'Tech2MgmtRoundInterviewedBy/EMail',
-  'OnShoreRoundInterviewedBy/Id', 'OnShoreRoundInterviewedBy/Title', 'OnShoreRoundInterviewedBy/EMail',
-  'HrRoundInterviewedBy/Id', 'HrRoundInterviewedBy/Title', 'HrRoundInterviewedBy/EMail'
-];
+.dashboard-container {
+  padding: 24px 28px;
+  background: var(--cohort-canvas);
+  min-height: 100%;
+}
 
-const EXPAND_FIELDS = [
-  'TechRound1InterviewedBy', 'Tech2MgmtRoundInterviewedBy',
-  'OnShoreRoundInterviewedBy', 'HrRoundInterviewedBy'
-];
+.dashboard-header h4 {
+  color: var(--cohort-muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.dashboard-header h1 {
+  color: var(--cohort-text);
+  margin: 4px 0 20px;
+  font-size: 26px;
+}
+
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  background: white;
+  border: 1px solid var(--cohort-border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+  }
+
+  .stat-value { font-size: 22px; font-weight: 700; color: var(--cohort-text); }
+  .stat-label { font-size: 12px; color: var(--cohort-muted); margin-top: 2px; }
+
+  &--active .stat-value { color: #8A6D00; }
+  &--pass .stat-value { color: var(--cohort-primary); }
+  &--reject .stat-value { color: var(--status-reject-text); }
+}
+
+.dashboard-toolbar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 260px;
+  padding: 10px 14px;
+  border: 1px solid var(--cohort-border);
+  border-radius: 8px;
+  font-size: 14px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+
+  &:focus {
+    outline: none;
+    border-color: var(--cohort-primary);
+    box-shadow: 0 0 0 3px var(--status-pass-bg);
+  }
+}
+
+.filter-select {
+  padding: 10px 12px;
+  border: 1px solid var(--cohort-border);
+  border-radius: 8px;
+  font-size: 13px;
+  background: white;
+  color: var(--cohort-text);
+  cursor: pointer;
+
+  &:focus { outline: none; border-color: var(--cohort-primary); }
+}
+
+.reset-btn {
+  padding: 10px 16px;
+  border: 1px solid var(--cohort-border);
+  border-radius: 8px;
+  background: white;
+  color: var(--cohort-muted);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: all 0.15s ease;
+
+  &:hover { border-color: var(--cohort-primary); color: var(--cohort-primary); }
+}
+
+.cohort-grid {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--cohort-border);
+}
+
+::ng-deep {
+  .candidate-cell {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 100%;
+
+    .avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      background: var(--cohort-primary);
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .name { font-weight: 600; color: var(--cohort-text); font-size: 13.5px; }
+    .sub { font-size: 11.5px; color: var(--cohort-muted); margin-top: 1px; }
+  }
+
+  .muted-pill {
+    font-size: 12px;
+    color: var(--cohort-muted);
+  }
+
+  .score-pill {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--cohort-text);
+    margin-right: 6px;
+  }
+
+  .chip {
+    display: inline-flex;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+
+    &--pass { background: var(--status-pass-bg); color: var(--status-pass-text); }
+    &--reject { background: var(--status-reject-bg); color: var(--status-reject-text); }
+    &--wait { background: var(--status-wait-bg); color: var(--status-wait-text); }
+  }
+
+  .wf-cell {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    height: 100%;
+  }
+
+  .wf-dots {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 4px;
+  }
+
+  .wf-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--cohort-border);
+    transition: background 0.2s ease;
+
+    &--done, &--current { background: var(--cohort-primary); }
+    &--rejected { background: var(--status-reject-text); }
+  }
+
+  .wf-label {
+    font-size: 12px;
+    color: var(--cohort-muted);
+
+    &--rejected { color: var(--status-reject-text); }
+  }
+
+  .open-btn {
+    background: transparent;
+    color: var(--cohort-primary);
+    border: 1px solid var(--cohort-primary);
+    border-radius: 6px;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 12px;
+    transition: all 0.15s ease;
+
+    &:hover { background: var(--cohort-primary); color: white; }
+  }
+}
+
+.state-panel {
+  text-align: center;
+  padding: 70px 0;
+  color: var(--cohort-muted);
+
+  &--error { color: var(--status-reject-text); }
+
+  .state-title { font-weight: 600; font-size: 15px; color: var(--cohort-text); margin-bottom: 4px; }
+  .state-detail { font-size: 13px; margin-bottom: 14px; }
+
+  button {
+    padding: 8px 20px;
+    background: var(--cohort-primary);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: background 0.15s ease;
+
+    &:hover { background: var(--cohort-primary-deep); }
+  }
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--cohort-border);
+  border-top-color: var(--cohort-primary);
+  border-radius: 50%;
+  margin: 0 auto 12px;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
