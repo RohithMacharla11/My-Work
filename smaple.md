@@ -1,142 +1,401 @@
-Got it. Here's the full rebuild — single scrolling page, access-capped combined tech table, strict edit rules, and a smoother, more polished UI throughout.
+Full rebuild below — models, services, dashboard, and the single-scroll detail page with the Management Round split, self-assign locking, and viewer-scoped editable fields.
 
-## Updated component list (repurposed, not renamed, to match your folder)
+## Updated folder structure
 
-- `workflow-stepper` → becomes a **sticky jump-nav** (scrolls to sections, doesn't swap content)
-- `tech-round-panel` → becomes the **combined Tech Assessment table**, capped at viewer's access
-- `general-details-panel` → gets a **"View more" expand**
-- `prescreen-panel`, plus new **on-shore-panel** and **hr-panel** sections
+```
+src/app/core/models/
+  round-status.enum.ts        (updated)
+  workflow-stage.enum.ts      (updated)
+  candidate.model.ts          (updated)
+src/app/core/services/
+  current-user.service.ts     (updated — switchable mock)
+  workflow-visibility.service.ts (rewritten — assign-to-me + role scoping)
+  candidate.service.ts        (updated mapping)
+src/app/features/candidate-dashboard/
+  candidate-dashboard.component.ts   (updated)
+  candidate-dashboard.component.html (updated)
+src/app/features/candidate-detail/
+  candidate-detail.component.ts/html/scss (updated)
+  components/
+    prescreen-panel/           (updated)
+    tech-round-panel/          (rewritten — combined TR1/TR2, capped)
+    mgmt-panel/                 (NEW)
+    onshore-panel/              (updated)
+    hr-panel/                   (updated)
+  candidate-detail.module.ts   (updated)
+```
 
-## 1. `core/services/workflow-visibility.service.ts` (rewritten)
+---
+
+## 1. `core/models/round-status.enum.ts`
+
+```typescript
+export enum RoundStatus {
+  Pending = 'Pending',
+  Selected = 'Selected',
+  Rejected = 'Rejected',
+  NotApplicable = 'N/A'
+}
+```
+
+## 2. `core/models/workflow-stage.enum.ts`
+
+```typescript
+export enum WorkflowStage {
+  Unassigned = 'Unassigned',
+  PreScreen = 'PreScreen',
+  TechRound1 = 'TechRound1',
+  TechRound2 = 'TechRound2',
+  ManagementRound = 'ManagementRound',
+  OnShore = 'OnShore',
+  HrFinal = 'HrFinal',
+  OfferStage = 'OfferStage',
+  Rejected = 'Rejected'
+}
+
+export const WORKFLOW_STAGE_LABEL: Record<WorkflowStage, string> = {
+  [WorkflowStage.Unassigned]: 'Not assigned',
+  [WorkflowStage.PreScreen]: 'Pre-Screen',
+  [WorkflowStage.TechRound1]: 'Tech Round 1',
+  [WorkflowStage.TechRound2]: 'Tech Round 2',
+  [WorkflowStage.ManagementRound]: 'Management Round',
+  [WorkflowStage.OnShore]: 'On-Shore Round',
+  [WorkflowStage.HrFinal]: 'HR Round — final',
+  [WorkflowStage.OfferStage]: 'Offer Stage',
+  [WorkflowStage.Rejected]: 'Rejected'
+};
+
+export const WORKFLOW_STAGE_ORDER: WorkflowStage[] = [
+  WorkflowStage.PreScreen,
+  WorkflowStage.TechRound1,
+  WorkflowStage.TechRound2,
+  WorkflowStage.ManagementRound,
+  WorkflowStage.OnShore,
+  WorkflowStage.HrFinal
+];
+```
+
+## 3. `core/models/candidate.model.ts`
+
+```typescript
+import { RoundStatus } from './round-status.enum';
+
+export interface SkillAssessment {
+  skillName: string;
+  screeningScore: string;
+  techRound1Comment: string;
+  techRound2Comment: string; // 'N/A' when Tech Round 2 is skipped
+}
+
+export interface SharePointUser {
+  id: number;
+  title: string;
+  email: string;
+}
+
+export interface InterviewRound {
+  interviewedBy: SharePointUser | null;
+  interviewDate: string | null;
+  interviewFeedback: string | null;
+  selection: RoundStatus;
+}
+
+export interface ManagementRound extends InterviewRound {
+  communication: string | null;
+  attitude: string | null;
+  culturalFit: string | null;
+  leadership: string | null;
+  otherTopics: string | null;
+}
+
+export interface Candidate {
+  id: number;
+  listSource: 'Chennai' | 'Mumbai';
+
+  candidateId: string;
+  candidateName: string;
+  candidateEmailID: string;
+  candidatePhoneNumber: string;
+  location: string;
+  roleDesignation: string;
+  profile: string;
+  allocatedBizLine: string;
+
+  prescreeningTestLink: string;
+  prescreeningTestDate: string | null;
+  prescreeningScore: string;
+  prescreeningSelected: RoundStatus;
+  prescreeningComments: string;
+
+  skills: SkillAssessment[];
+
+  techRound1: InterviewRound;
+  techRound2: InterviewRound;      // selection may be RoundStatus.NotApplicable
+  mgmtRound: ManagementRound;
+  onShoreRound: InterviewRound;
+  hrRound: InterviewRound;
+
+  offerSent: boolean;
+  offerAccepted: boolean;
+
+  cvUpload: string;
+  hireproResultsUpload: string;
+}
+```
+
+## 4. `core/services/current-user.service.ts` (rewritten — switch role here to test)
 
 ```typescript
 import { Injectable } from '@angular/core';
-import { Candidate, InterviewRound } from '../models/candidate.model';
-import { RoundStatus } from '../models/round-status.enum';
-import { CurrentUserService } from './current-user.service';
+import { Observable, of } from 'rxjs';
 
-export type RoundKey = 'techRound1' | 'techRound2Mgmt' | 'onShoreRound' | 'hrRound';
+export type UserRole = 'HrAdmin' | 'Recruiter' | 'TechPanel' | 'MgmtPanel' | 'OnShorePanel' | 'HrPanel';
+
+export interface CurrentUser {
+  id: number;
+  title: string;
+  email: string;
+  role: UserRole;
+}
+
+/**
+ * ===== SWITCH THIS to test different roles/permissions while real
+ * SharePoint group → role mapping isn't wired up yet. =====
+ *
+ * Try changing `role` to any of: 'HrAdmin' | 'Recruiter' | 'TechPanel'
+ * | 'MgmtPanel' | 'OnShorePanel' | 'HrPanel' and reload to see the
+ * dashboard/detail page behave differently for each.
+ */
+const MOCK_USER: CurrentUser = {
+  id: 101,
+  title: 'Arun Kumar',
+  email: 'arun.kumar@xyzxyz.com',
+  role: 'TechPanel'
+};
+
+@Injectable({ providedIn: 'root' })
+export class CurrentUserService {
+  private user: CurrentUser = MOCK_USER;
+
+  get(): CurrentUser {
+    return this.user;
+  }
+
+  /** Kept for later — swap this to a real /_api/web/currentuser + group lookup. */
+  loadCurrentUser(): Observable<CurrentUser> {
+    return of(this.user);
+  }
+}
+```
+
+## 5. `core/services/workflow-visibility.service.ts` (full rewrite)
+
+```typescript
+import { Injectable } from '@angular/core';
+import { Candidate, InterviewRound, SharePointUser } from '../models/candidate.model';
+import { RoundStatus } from '../models/round-status.enum';
+import { CurrentUserService, UserRole } from './current-user.service';
+
+export type RoundKey = 'techRound1' | 'techRound2' | 'mgmtRound' | 'onShoreRound' | 'hrRound';
 
 export interface RoundVisibility {
   visible: boolean;
   editable: boolean;
   readOnly: boolean;
-  locked: boolean;
-  lockedMessage?: string;
+  notApplicable: boolean;
+  canAssignToMe: boolean;
+  assignedToOther: boolean;
 }
 
-const ROUND_SEQUENCE: RoundKey[] = ['techRound1', 'techRound2Mgmt', 'onShoreRound', 'hrRound'];
+const ROUND_SEQUENCE: RoundKey[] = ['techRound1', 'techRound2', 'mgmtRound', 'onShoreRound', 'hrRound'];
 
-const ROUND_LABEL: Record<RoundKey, string> = {
-  techRound1: 'Tech Round 1',
-  techRound2Mgmt: 'Tech 2 / Management',
-  onShoreRound: 'On-Shore Round',
-  hrRound: 'HR Round'
+/** Which rounds each role is allowed to act on. Tech panel covers both tech rounds. */
+const ROLE_ACTIONABLE_ROUNDS: Record<UserRole, RoundKey[]> = {
+  HrAdmin: ROUND_SEQUENCE,
+  Recruiter: [],
+  TechPanel: ['techRound1', 'techRound2'],
+  MgmtPanel: ['mgmtRound'],
+  OnShorePanel: ['onShoreRound'],
+  HrPanel: ['hrRound']
 };
+
+/** Self-service rounds: the panel member claims it themselves.
+ *  Admin-assign rounds: HR Admin assigns a specific person via the Assign Panel screen. */
+const SELF_ASSIGN_ROUNDS: RoundKey[] = ['techRound1', 'techRound2', 'mgmtRound'];
 
 @Injectable({ providedIn: 'root' })
 export class WorkflowVisibilityService {
 
-  /**
-   * TEMP: while permissions aren't finalized, viewer access is treated as
-   * "full" (HrAdmin-equivalent). Flip to false once real role assignment
-   * is wired up — every rule below already respects it correctly.
-   */
-  readonly godModeEnabled = true;
-
   constructor(private currentUser: CurrentUserService) {}
 
-  /** Index (0-3) of the last round this viewer is allowed to see at all, capped by their own assignment. */
-  getMaxVisibleRoundIndex(): number {
-    if (this.godModeEnabled) return ROUND_SEQUENCE.length - 1;
+  // ---------- Progress / gating ----------
 
-    const user = this.currentUser.get();
-    if (user.role === 'HrAdmin' || user.role === 'Recruiter') {
-      return ROUND_SEQUENCE.length - 1;
-    }
-    const idx = ROUND_SEQUENCE.indexOf(user.assignedRound as RoundKey);
-    return idx === -1 ? -1 : idx;
-  }
-
-  /** Whether this round is within the viewer's access at all (regardless of candidate progress). */
-  isRoundInViewerAccess(round: RoundKey): boolean {
-    return ROUND_SEQUENCE.indexOf(round) <= this.getMaxVisibleRoundIndex();
-  }
-
-  /** Whether the candidate has actually reached this round (previous round Selected). */
   hasCandidateReached(candidate: Candidate, round: RoundKey): boolean {
-    const index = ROUND_SEQUENCE.indexOf(round);
-    if (index === 0) {
-      return candidate.prescreeningSelected === RoundStatus.Selected;
+    switch (round) {
+      case 'techRound1':
+        return candidate.prescreeningSelected === RoundStatus.Selected;
+      case 'techRound2':
+        return candidate.techRound1.selection === RoundStatus.Selected;
+      case 'mgmtRound': {
+        const tr2 = candidate.techRound2.selection;
+        if (tr2 === RoundStatus.Selected) return true;
+        if (tr2 === RoundStatus.NotApplicable) return candidate.techRound1.selection === RoundStatus.Selected;
+        return false;
+      }
+      case 'onShoreRound':
+        return candidate.mgmtRound.selection === RoundStatus.Selected;
+      case 'hrRound':
+        return candidate.onShoreRound.selection === RoundStatus.Selected;
     }
-    const previousRound = ROUND_SEQUENCE[index - 1];
-    return this.getRound(candidate, previousRound).selection === RoundStatus.Selected;
   }
 
   isPipelineTerminated(candidate: Candidate, upToRound: RoundKey): boolean {
-    const index = ROUND_SEQUENCE.indexOf(upToRound);
     if (candidate.prescreeningSelected === RoundStatus.Rejected) return true;
+    const index = ROUND_SEQUENCE.indexOf(upToRound);
     for (let i = 0; i < index; i++) {
-      if (this.getRound(candidate, ROUND_SEQUENCE[i]).selection === RoundStatus.Rejected) {
-        return true;
-      }
+      const r = this.getRound(candidate, ROUND_SEQUENCE[i]);
+      if (r.selection === RoundStatus.Rejected) return true;
     }
     return false;
   }
 
-  /**
-   * A round is editable ONLY if:
-   *  - it is exactly the viewer's own assigned round (not before, not after)
-   *  - the previous round is Selected (their turn has arrived)
-   *  - this round hasn't already been finalized (Selected/Rejected)
-   * Once finalized, it locks for everyone — including the original interviewer.
-   */
+  /** The single round the candidate is currently sitting at (first reached-but-not-finalized round). Null if fully done or fully rejected. */
+  getCurrentActiveRound(candidate: Candidate): RoundKey | null {
+    if (this.isPipelineTerminated(candidate, 'hrRound')) return null;
+    for (const round of ROUND_SEQUENCE) {
+      if (round === 'techRound2' && candidate.techRound2.selection === RoundStatus.NotApplicable) continue;
+      if (this.hasCandidateReached(candidate, round)) {
+        const r = this.getRound(candidate, round);
+        if (r.selection === RoundStatus.Pending) return round;
+      }
+    }
+    return null;
+  }
+
+  // ---------- Viewer access scope ----------
+
+  getMaxVisibleRoundIndex(): number {
+    const user = this.currentUser.get();
+    if (user.role === 'HrAdmin' || user.role === 'Recruiter') return ROUND_SEQUENCE.length - 1;
+    const rounds = ROLE_ACTIONABLE_ROUNDS[user.role];
+    if (!rounds.length) return -1;
+    return ROUND_SEQUENCE.indexOf(rounds[rounds.length - 1]);
+  }
+
+  isRoundInViewerAccess(round: RoundKey): boolean {
+    return ROUND_SEQUENCE.indexOf(round) <= this.getMaxVisibleRoundIndex();
+  }
+
+  // ---------- Per-round visibility for rendering a section ----------
+
   getVisibilityFor(candidate: Candidate, round: RoundKey): RoundVisibility {
-    if (!this.isRoundInViewerAccess(round)) {
-      return { visible: false, editable: false, readOnly: false, locked: false };
-    }
-
-    if (this.godModeEnabled) {
-      const alreadyFinal = this.getRound(candidate, round).selection !== RoundStatus.Pending;
-      return { visible: true, editable: !alreadyFinal, readOnly: alreadyFinal, locked: false };
-    }
-
     const user = this.currentUser.get();
 
-    if (user.role === 'HrAdmin' || user.role === 'Recruiter') {
-      const alreadyFinal = this.getRound(candidate, round).selection !== RoundStatus.Pending;
-      return {
-        visible: true,
-        editable: user.role === 'HrAdmin' && round === 'hrRound' && !alreadyFinal,
-        readOnly: user.role === 'Recruiter' || alreadyFinal,
-        locked: false
-      };
+    if (!this.isRoundInViewerAccess(round)) {
+      return { visible: false, editable: false, readOnly: false, notApplicable: false, canAssignToMe: false, assignedToOther: false };
     }
 
-    const isOwnRound = user.assignedRound === round;
+    if (round === 'techRound2' && candidate.techRound2.selection === RoundStatus.NotApplicable) {
+      return { visible: true, editable: false, readOnly: true, notApplicable: true, canAssignToMe: false, assignedToOther: false };
+    }
+
+    const roundData = this.getRound(candidate, round);
+    const finalized = roundData.selection === RoundStatus.Selected || roundData.selection === RoundStatus.Rejected;
+    const assignedToMe = roundData.interviewedBy?.id === user.id;
+    const assignedToOther = !!roundData.interviewedBy && !assignedToMe;
+
+    if (user.role === 'HrAdmin') {
+      return { visible: true, editable: !finalized, readOnly: finalized, notApplicable: false, canAssignToMe: false, assignedToOther: false };
+    }
+    if (user.role === 'Recruiter') {
+      return { visible: true, editable: false, readOnly: true, notApplicable: false, canAssignToMe: false, assignedToOther: false };
+    }
+
+    const canActOnRound = ROLE_ACTIONABLE_ROUNDS[user.role].includes(round);
+    if (!canActOnRound) {
+      // within their max-access range but not a round they personally act on (e.g. TechPanel viewing... n/a here since actionable==access, but kept for future roles)
+      return { visible: true, editable: false, readOnly: true, notApplicable: false, canAssignToMe: false, assignedToOther };
+    }
 
     if (this.isPipelineTerminated(candidate, round)) {
-      return { visible: true, editable: false, readOnly: true, locked: false };
+      return { visible: true, editable: false, readOnly: true, notApplicable: false, canAssignToMe: false, assignedToOther: false };
     }
 
     if (!this.hasCandidateReached(candidate, round)) {
-      if (!isOwnRound) {
-        return { visible: true, editable: false, readOnly: false, locked: true, lockedMessage: 'Not reached yet.' };
-      }
-      const index = ROUND_SEQUENCE.indexOf(round);
-      const prevLabel = index === 0 ? 'Pre-Screen' : ROUND_LABEL[ROUND_SEQUENCE[index - 1]];
-      return {
-        visible: true, editable: false, readOnly: false, locked: true,
-        lockedMessage: `Waiting for ${prevLabel} to complete.`
-      };
+      return { visible: false, editable: false, readOnly: false, notApplicable: false, canAssignToMe: false, assignedToOther: false };
     }
 
-    if (!isOwnRound) {
-      return { visible: true, editable: false, readOnly: true, locked: false };
+    if (assignedToOther) {
+      return { visible: true, editable: false, readOnly: false, notApplicable: false, canAssignToMe: false, assignedToOther: true };
     }
 
-    const alreadyFinal = this.getRound(candidate, round).selection !== RoundStatus.Pending;
-    return { visible: true, editable: !alreadyFinal, readOnly: alreadyFinal, locked: false };
+    if (!roundData.interviewedBy) {
+      const isCurrentTurn = this.getCurrentActiveRound(candidate) === round;
+      return { visible: true, editable: false, readOnly: false, notApplicable: false, canAssignToMe: isCurrentTurn, assignedToOther: false };
+    }
+
+    // assigned to me
+    return { visible: true, editable: !finalized, readOnly: finalized, notApplicable: false, canAssignToMe: false, assignedToOther: false };
+  }
+
+  // ---------- Dashboard-level: can this viewer open the candidate at all ----------
+
+  canOpenCandidate(candidate: Candidate): boolean {
+    const user = this.currentUser.get();
+    if (user.role === 'HrAdmin' || user.role === 'Recruiter') return true;
+
+    const myRounds = ROLE_ACTIONABLE_ROUNDS[user.role];
+    const active = this.getCurrentActiveRound(candidate);
+
+    for (const r of myRounds) {
+      const round = this.getRound(candidate, r);
+      if (round.interviewedBy?.id === user.id) return true;       // their own round, any state
+      if (active === r && !round.interviewedBy) return true;      // open + it's this candidate's turn
+    }
+    return false;
+  }
+
+  /** Small helper for the dashboard row: what to show in the Action column. */
+  getDashboardActionState(candidate: Candidate): 'open' | 'assign' | 'locked' {
+    const user = this.currentUser.get();
+    if (user.role === 'HrAdmin' || user.role === 'Recruiter') return 'open';
+
+    const myRounds = ROLE_ACTIONABLE_ROUNDS[user.role];
+    const active = this.getCurrentActiveRound(candidate);
+
+    for (const r of myRounds) {
+      const round = this.getRound(candidate, r);
+      if (round.interviewedBy?.id === user.id) return 'open';
+      if (active === r && !round.interviewedBy) return 'assign';
+    }
+    return 'locked';
+  }
+
+  // ---------- Mutations (mock — replace bodies with SharePoint PATCH calls later) ----------
+
+  assignToMe(candidate: Candidate, round: RoundKey): void {
+    const user = this.currentUser.get();
+    const spUser: SharePointUser = { id: user.id, title: user.title, email: user.email };
+    this.getRound(candidate, round).interviewedBy = spUser;
+    // TODO: SharePoint PATCH — set {Round}InterviewedBy on the list item.
+  }
+
+  submitRound(
+    candidate: Candidate,
+    round: RoundKey,
+    feedback: string,
+    decision: RoundStatus.Selected | RoundStatus.Rejected,
+    mgmtExtras?: Partial<Pick<import('../models/candidate.model').ManagementRound,
+      'communication' | 'attitude' | 'culturalFit' | 'leadership' | 'otherTopics'>>
+  ): void {
+    const r = this.getRound(candidate, round);
+    r.interviewFeedback = feedback;
+    r.selection = decision;
+    r.interviewDate = new Date().toISOString().split('T')[0];
+    if (round === 'mgmtRound' && mgmtExtras) {
+      Object.assign(candidate.mgmtRound, mgmtExtras);
+    }
+    // TODO: SharePoint PATCH — set {Round}InterviewFeedback/Selection/Date on the list item.
   }
 
   private getRound(candidate: Candidate, key: RoundKey): InterviewRound {
@@ -145,492 +404,139 @@ export class WorkflowVisibilityService {
 }
 ```
 
-## 2. `candidate-detail.component.ts` (rewritten — no tab state, just scroll)
+## 6. `core/services/candidate.service.ts` (updated mapping)
 
 ```typescript
-import { Component, OnInit } from '@angular/core';
-import { ActivatedRoute, Router } from '@angular/router';
-import { CandidateService } from '../../core/services/candidate.service';
-import { WorkflowVisibilityService, RoundKey } from '../../core/services/workflow-visibility.service';
-import { Candidate } from '../../core/models/candidate.model';
-import { WorkflowStage, WORKFLOW_STAGE_LABEL } from '../../core/models/workflow-stage.enum';
+import { Injectable } from '@angular/core';
+import { Observable, forkJoin } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { SharePointService } from './sharepoint.service';
+import { Candidate, SkillAssessment } from '../models/candidate.model';
+import { RoundStatus } from '../models/round-status.enum';
+import { WorkflowStage } from '../models/workflow-stage.enum';
 
-@Component({
-  selector: 'app-candidate-detail',
-  templateUrl: './candidate-detail.component.html',
-  styleUrls: ['./candidate-detail.component.scss']
-})
-export class CandidateDetailComponent implements OnInit {
+const SKILL_KEYS = ['One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
 
-  candidate: Candidate | null = null;
-  currentStage: WorkflowStage | null = null;
-  loading = true;
-  errorMessage: string | null = null;
+const SELECT_FIELDS = [
+  'Id', 'CandidateId', 'CandidateName', 'CandidateEmailId', 'CandidatePhoneNumber',
+  'Location', 'RoleDesignation', 'Profile', 'AllocatedBizLine',
+  'PrescreeningTestLink', 'PrescreeningTestDate', 'PrescreeningScore',
+  'PrescreeningSelected', 'PrescreeningComments',
+  ...SKILL_KEYS.flatMap(k => [`Skill${k}`, `Skill${k}Score`, `Skill${k}TROne`, `Skill${k}TRTwo`]),
+  'TechRound1InterviewDate', 'TechRound1InterviewFeedback', 'TechRound1InterviewSelection',
+  'TechRound2InterviewDate', 'TechRound2InterviewFeedback', 'TechRound2InterviewSelection',
+  'MgmtRoundInterviewDate', 'MgmtRoundCommunication', 'MgmtRoundAttitude', 'MgmtRoundCulturalFit',
+  'MgmtRoundLeadership', 'MgmtRoundOtherTopics', 'MgmtRoundInterviewSelection',
+  'OnShoreRoundInterviewDate', 'OnShoreRoundInterviewFeedback', 'OnShoreRoundInterviewSelection',
+  'HrRoundInterviewDate', 'HrRoundInterviewFeedback', 'HrRoundInterviewSelection',
+  'AllocatedOfferSent', 'AllocatedOfferAccepted',
+  'CvUpload', 'HireproResultsUpload',
+  'TechRound1InterviewedBy/Id', 'TechRound1InterviewedBy/Title', 'TechRound1InterviewedBy/EMail',
+  'TechRound2InterviewedBy/Id', 'TechRound2InterviewedBy/Title', 'TechRound2InterviewedBy/EMail',
+  'MgmtRoundInterviewedBy/Id', 'MgmtRoundInterviewedBy/Title', 'MgmtRoundInterviewedBy/EMail',
+  'OnShoreRoundInterviewedBy/Id', 'OnShoreRoundInterviewedBy/Title', 'OnShoreRoundInterviewedBy/EMail',
+  'HrRoundInterviewedBy/Id', 'HrRoundInterviewedBy/Title', 'HrRoundInterviewedBy/EMail'
+];
 
-  constructor(
-    private route: ActivatedRoute,
-    private router: Router,
-    private candidateService: CandidateService,
-    public visibility: WorkflowVisibilityService
-  ) {}
+const EXPAND_FIELDS = [
+  'TechRound1InterviewedBy', 'TechRound2InterviewedBy', 'MgmtRoundInterviewedBy',
+  'OnShoreRoundInterviewedBy', 'HrRoundInterviewedBy'
+];
 
-  ngOnInit(): void {
-    const source = this.route.snapshot.paramMap.get('source') as 'Chennai' | 'Mumbai';
-    const id = Number(this.route.snapshot.paramMap.get('id'));
-    this.loadCandidate(source, id);
+@Injectable({ providedIn: 'root' })
+export class CandidateService {
+
+  constructor(private sp: SharePointService) {}
+
+  getCandidates(source: 'Chennai' | 'Mumbai'): Observable<Candidate[]> {
+    const listName = source === 'Chennai' ? 'ChennaiInterviewList' : 'MumbaiInterviewList';
+    return this.sp.getListItems<any>(listName, SELECT_FIELDS, EXPAND_FIELDS).pipe(
+      map(items => items.map(item => this.mapToCandidate(item, source)))
+    );
   }
 
-  private loadCandidate(source: 'Chennai' | 'Mumbai', id: number): void {
-    this.loading = true;
-    this.errorMessage = null;
+  getAllCandidates(): Observable<Candidate[]> {
+    return forkJoin([this.getCandidates('Chennai'), this.getCandidates('Mumbai')]).pipe(
+      map(([chennai, mumbai]) => [...chennai, ...mumbai])
+    );
+  }
 
-    this.candidateService.getAllCandidates().subscribe({
-      next: (candidates) => {
-        const found = candidates.find(c => c.listSource === source && c.id === id);
-        if (!found) {
-          this.errorMessage = 'Candidate not found.';
-          this.loading = false;
-          return;
-        }
-        this.candidate = found;
-        this.currentStage = this.candidateService.getCurrentStage(found);
-        this.loading = false;
+  private mapToCandidate(item: any, source: 'Chennai' | 'Mumbai'): Candidate {
+    return {
+      id: item.Id,
+      listSource: source,
+      candidateId: item.CandidateId,
+      candidateName: item.CandidateName,
+      candidateEmailID: item.CandidateEmailId,
+      candidatePhoneNumber: item.CandidatePhoneNumber,
+      location: item.Location,
+      roleDesignation: item.RoleDesignation,
+      profile: item.Profile,
+      allocatedBizLine: item.AllocatedBizLine,
+
+      prescreeningTestLink: item.PrescreeningTestLink,
+      prescreeningTestDate: item.PrescreeningTestDate,
+      prescreeningScore: item.PrescreeningScore,
+      prescreeningSelected: this.toStatus(item.PrescreeningSelected),
+      prescreeningComments: item.PrescreeningComments,
+
+      skills: this.mapSkills(item),
+
+      techRound1: {
+        interviewedBy: this.mapUser(item.TechRound1InterviewedBy),
+        interviewDate: item.TechRound1InterviewDate,
+        interviewFeedback: item.TechRound1InterviewFeedback,
+        selection: this.toStatus(item.TechRound1InterviewSelection)
       },
-      error: () => {
-        this.errorMessage = 'Could not load candidate details from SharePoint.';
-        this.loading = false;
-      }
-    });
+      techRound2: {
+        interviewedBy: this.mapUser(item.TechRound2InterviewedBy),
+        interviewDate: item.TechRound2InterviewDate,
+        interviewFeedback: item.TechRound2InterviewFeedback,
+        selection: this.toStatus(item.TechRound2InterviewSelection)
+      },
+      mgmtRound: {
+        interviewedBy: this.mapUser(item.MgmtRoundInterviewedBy),
+        interviewDate: item.MgmtRoundInterviewDate,
+        interviewFeedback: null,
+        selection: this.toStatus(item.MgmtRoundInterviewSelection),
+        communication: item.MgmtRoundCommunication,
+        attitude: item.MgmtRoundAttitude,
+        culturalFit: item.MgmtRoundCulturalFit,
+        leadership: item.MgmtRoundLeadership,
+        otherTopics: item.MgmtRoundOtherTopics
+      },
+      onShoreRound: {
+        interviewedBy: this.mapUser(item.OnShoreRoundInterviewedBy),
+        interviewDate: item.OnShoreRoundInterviewDate,
+        interviewFeedback: item.OnShoreRoundInterviewFeedback,
+        selection: this.toStatus(item.OnShoreRoundInterviewSelection)
+      },
+      hrRound: {
+        interviewedBy: this.mapUser(item.HrRoundInterviewedBy),
+        interviewDate: item.HrRoundInterviewDate,
+        interviewFeedback: item.HrRoundInterviewFeedback,
+        selection: this.toStatus(item.HrRoundInterviewSelection)
+      },
+
+      offerSent: item.AllocatedOfferSent === 'Yes',
+      offerAccepted: item.AllocatedOfferAccepted === 'Yes',
+
+      cvUpload: item.CvUpload,
+      hireproResultsUpload: item.HireproResultsUpload
+    };
   }
 
-  goBack(): void {
-    this.router.navigate(['/dashboard']);
+  private mapSkills(item: any): SkillAssessment[] {
+    return SKILL_KEYS
+      .map(k => ({
+        skillName: item[`Skill${k}`],
+        screeningScore: item[`Skill${k}Score`],
+        techRound1Comment: item[`Skill${k}TROne`],
+        techRound2Comment: item[`Skill${k}TRTwo`]
+      }))
+      .filter(s => !!s.skillName);
   }
 
-  scrollTo(sectionId: string): void {
-    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
-  get candidateInitials(): string {
-    if (!this.candidate?.candidateName) return '';
-    return this.candidate.candidateName
-      .split(' ')
-      .map(n => n[0])
-      .join('')
-      .substring(0, 2)
-      .toUpperCase();
-  }
-
-  get stageLabel(): string {
-    return this.currentStage ? WORKFLOW_STAGE_LABEL[this.currentStage] : '';
-  }
-
-  // Section visibility, computed once for the template
-  get showPreScreen(): boolean {
-    return !!this.candidate && this.visibility.isRoundInViewerAccess('techRound1');
-    // pre-screen is visible to anyone with at least Tech Round 1 access
-  }
-
-  get showTechTable(): boolean {
-    if (!this.candidate) return false;
-    return this.visibility.isRoundInViewerAccess('techRound1')
-      && this.visibility.hasCandidateReached(this.candidate, 'techRound1');
-  }
-
-  get showTechRound2Column(): boolean {
-    if (!this.candidate) return false;
-    return this.visibility.isRoundInViewerAccess('techRound2Mgmt');
-  }
-
-  get showOnShore(): boolean {
-    if (!this.candidate) return false;
-    return this.visibility.isRoundInViewerAccess('onShoreRound')
-      && this.visibility.hasCandidateReached(this.candidate, 'onShoreRound');
-  }
-
-  get showHr(): boolean {
-    if (!this.candidate) return false;
-    return this.visibility.isRoundInViewerAccess('hrRound')
-      && this.visibility.hasCandidateReached(this.candidate, 'hrRound');
-  }
-}
-```
-
-## 3. `candidate-detail.component.html` (rewritten — one scroll, sticky jump-nav)
-
-```html
-<div class="detail-page">
-
-  <div class="detail-topbar">
-    <button class="back-link" (click)="goBack()">← Back to Candidates</button>
-  </div>
-
-  <div *ngIf="loading" class="state-panel">
-    <div class="spinner"></div>
-    <p>Loading candidate...</p>
-  </div>
-
-  <div *ngIf="errorMessage" class="state-panel state-panel--error">
-    <p class="state-title">{{ errorMessage }}</p>
-  </div>
-
-  <ng-container *ngIf="candidate && !loading">
-
-    <div class="candidate-hero">
-      <div class="hero-avatar">{{ candidateInitials }}</div>
-      <div class="hero-info">
-        <h1>{{ candidate.candidateName }}</h1>
-        <div class="hero-meta">
-          <span>{{ candidate.candidateEmailId || '—' }}</span>
-          <span class="dot">·</span>
-          <span>{{ candidate.candidatePhoneNumber || '—' }}</span>
-          <span class="dot">·</span>
-          <span>{{ candidate.roleDesignation }} · {{ candidate.profile }}</span>
-        </div>
-      </div>
-      <div class="hero-id">
-        <div class="id-label">Stage</div>
-        <div class="id-value">{{ stageLabel }}</div>
-      </div>
-    </div>
-
-    <nav class="jump-nav">
-      <button (click)="scrollTo('general')">General</button>
-      <button *ngIf="showPreScreen" (click)="scrollTo('prescreen')">Pre-Screen</button>
-      <button *ngIf="showTechTable" (click)="scrollTo('tech')">Technical</button>
-      <button *ngIf="showOnShore" (click)="scrollTo('onshore')">On-Shore</button>
-      <button *ngIf="showHr" (click)="scrollTo('hr')">HR Final</button>
-    </nav>
-
-    <div class="detail-sections">
-      <section id="general">
-        <app-general-details-panel [candidate]="candidate"></app-general-details-panel>
-      </section>
-
-      <section id="prescreen" *ngIf="showPreScreen">
-        <app-prescreen-panel [candidate]="candidate"></app-prescreen-panel>
-      </section>
-
-      <section id="tech" *ngIf="showTechTable">
-        <app-tech-round-panel [candidate]="candidate" [showRound2]="showTechRound2Column"></app-tech-round-panel>
-      </section>
-
-      <section id="onshore" *ngIf="showOnShore">
-        <app-onshore-panel [candidate]="candidate"></app-onshore-panel>
-      </section>
-
-      <section id="hr" *ngIf="showHr">
-        <app-hr-panel [candidate]="candidate"></app-hr-panel>
-      </section>
-    </div>
-
-  </ng-container>
-</div>
-```
-
-## 4. `candidate-detail.component.scss`
-
-```scss
-.detail-page {
-  padding: 24px 32px 64px;
-  background: var(--cohort-canvas);
-  min-height: 100%;
-}
-
-.detail-topbar { margin-bottom: 16px; }
-
-.back-link {
-  background: none;
-  border: none;
-  color: var(--cohort-primary);
-  font-weight: 600;
-  font-size: 13.5px;
-  cursor: pointer;
-  padding: 0;
-  transition: opacity 0.15s ease;
-  &:hover { opacity: 0.65; }
-}
-
-.candidate-hero {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  background: white;
-  border: 1px solid var(--cohort-border);
-  border-radius: 12px;
-  padding: 20px 24px;
-  margin-bottom: 16px;
-  animation: fadeUp 0.25s ease;
-}
-
-.hero-avatar {
-  width: 56px; height: 56px;
-  border-radius: 14px;
-  background: var(--cohort-primary);
-  color: white;
-  font-size: 20px; font-weight: 700;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-}
-
-.hero-info {
-  flex: 1;
-  h1 { margin: 0 0 4px; font-size: 20px; color: var(--cohort-text); }
-  .hero-meta { font-size: 13px; color: var(--cohort-muted); .dot { margin: 0 6px; } }
-}
-
-.hero-id {
-  text-align: right;
-  .id-label { font-size: 10px; text-transform: uppercase; color: var(--cohort-muted); letter-spacing: 0.05em; }
-  .id-value { font-weight: 700; color: var(--cohort-primary); font-size: 14px; }
-}
-
-.jump-nav {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  display: flex;
-  gap: 8px;
-  background: var(--cohort-canvas);
-  padding: 10px 0 16px;
-
-  button {
-    background: white;
-    border: 1px solid var(--cohort-border);
-    color: var(--cohort-muted);
-    padding: 7px 16px;
-    border-radius: 999px;
-    font-size: 12.5px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s ease;
-
-    &:hover {
-      border-color: var(--cohort-primary);
-      color: var(--cohort-primary);
-      transform: translateY(-1px);
-    }
-  }
-}
-
-.detail-sections {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-
-  section {
-    scroll-margin-top: 60px;
-    animation: fadeUp 0.3s ease;
-  }
-}
-
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.state-panel {
-  text-align: center;
-  padding: 80px 0;
-  color: var(--cohort-muted);
-  &--error { color: var(--status-reject-text); }
-}
-
-.spinner {
-  width: 28px; height: 28px;
-  border: 3px solid var(--cohort-border);
-  border-top-color: var(--cohort-primary);
-  border-radius: 50%;
-  margin: 0 auto 12px;
-  animation: spin 0.8s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-```
-
-## 5. Shared panel shell style — `_panel-shared.scss` (new, put in `styles/`)
-
-```scss
-.panel {
-  background: white;
-  border: 1px solid var(--cohort-border);
-  border-radius: 12px;
-  padding: 22px 26px;
-  transition: box-shadow 0.2s ease;
-
-  &:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
-
-  h3 { margin: 0 0 18px; font-size: 15px; color: var(--cohort-text); }
-}
-
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 18px 24px;
-}
-
-.detail-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--cohort-muted); }
-  span, a { font-size: 14px; color: var(--cohort-text); font-weight: 500; }
-  a { color: var(--cohort-primary); text-decoration: none; &:hover { text-decoration: underline; } }
-}
-
-.chip {
-  display: inline-flex;
-  width: fit-content;
-  padding: 3px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  &--pass { background: var(--status-pass-bg); color: var(--status-pass-text); }
-  &--reject { background: var(--status-reject-bg); color: var(--status-reject-text); }
-  &--wait { background: var(--status-wait-bg); color: var(--status-wait-text); }
-}
-
-.lock-badge {
-  font-size: 12px;
-  color: var(--status-wait-text);
-  background: var(--status-wait-bg);
-  padding: 4px 10px;
-  border-radius: 999px;
-}
-```
-
-## 6. `general-details-panel.component.ts` (with view-more expand)
-
-```typescript
-import { Component, Input } from '@angular/core';
-import { Candidate } from '../../../../core/models/candidate.model';
-
-@Component({
-  selector: 'app-general-details-panel',
-  templateUrl: './general-details-panel.component.html',
-  styleUrls: ['./general-details-panel.component.scss']
-})
-export class GeneralDetailsPanelComponent {
-  @Input() candidate!: Candidate;
-  expanded = false;
-
-  toggle(): void { this.expanded = !this.expanded; }
-}
-```
-
-## 7. `general-details-panel.component.html`
-
-```html
-<div class="panel">
-  <div class="panel-header">
-    <h3>Candidate Details</h3>
-    <button class="expand-btn" (click)="toggle()">
-      {{ expanded ? 'View less' : 'View more' }}
-      <span class="chevron" [class.chevron--open]="expanded">⌄</span>
-    </button>
-  </div>
-
-  <div class="detail-grid">
-    <div class="detail-field"><label>Candidate ID</label><span>{{ candidate.candidateId || '—' }}</span></div>
-    <div class="detail-field"><label>Full Name</label><span>{{ candidate.candidateName || '—' }}</span></div>
-    <div class="detail-field"><label>Email</label><span>{{ candidate.candidateEmailId || '—' }}</span></div>
-    <div class="detail-field"><label>Phone</label><span>{{ candidate.candidatePhoneNumber || '—' }}</span></div>
-    <div class="detail-field"><label>Role / Designation</label><span>{{ candidate.roleDesignation || '—' }}</span></div>
-    <div class="detail-field"><label>Profile</label><span>{{ candidate.profile || '—' }}</span></div>
-  </div>
-
-  <div class="expand-panel" [class.expand-panel--open]="expanded">
-    <div class="detail-grid">
-      <div class="detail-field"><label>Location</label><span>{{ candidate.location || '—' }}</span></div>
-      <div class="detail-field"><label>Allocated Biz Line</label><span>{{ candidate.allocatedBizLine || '—' }}</span></div>
-      <div class="detail-field" *ngIf="candidate.cvUpload">
-        <label>CV</label>
-        <a [href]="candidate.cvUpload" target="_blank">View CV ↗</a>
-      </div>
-      <div class="detail-field" *ngIf="candidate.hireproResultsUpload">
-        <label>Hirepro Results</label>
-        <a [href]="candidate.hireproResultsUpload" target="_blank">View results ↗</a>
-      </div>
-    </div>
-  </div>
-</div>
-```
-
-## 8. `general-details-panel.component.scss`
-
-```scss
-@import '../../../../../styles/panel-shared';
-
-.panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 18px;
-  h3 { margin: 0; }
-}
-
-.expand-btn {
-  background: none;
-  border: none;
-  color: var(--cohort-primary);
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  transition: opacity 0.15s ease;
-  &:hover { opacity: 0.7; }
-}
-
-.chevron {
-  transition: transform 0.2s ease;
-  &--open { transform: rotate(180deg); }
-}
-
-.expand-panel {
-  max-height: 0;
-  overflow: hidden;
-  transition: max-height 0.25s ease, opacity 0.2s ease, margin-top 0.25s ease;
-  opacity: 0;
-
-  &--open {
-    max-height: 300px;
-    opacity: 1;
-    margin-top: 18px;
-    padding-top: 18px;
-    border-top: 1px solid var(--cohort-border);
-  }
-}
-```
-
-## 9. `prescreen-panel.component.ts` / `.html` / `.scss`
-
-```typescript
-import { Component, Input } from '@angular/core';
-import { Candidate } from '../../../../core/models/candidate.model';
-
-@Component({
-  selector: 'app-prescreen-panel',
-  templateUrl: './prescreen-panel.component.html',
-  styleUrls: ['./prescreen-panel.component.scss']
-})
-export class PrescreenPanelComponent {
-  @Input() candidate!: Candidate;
-}
-```
-
-```html
-<div class="panel">
-  <h3>Pre-Screening</h3>
-  <div class="detail-grid">
-    <div class="detail-field"><label>Score</label><span>{{ candidate.prescreeningScore || '—' }} / 100</span></div>
-    <div class="detail-field">
-      <label>Result</label>
-      <span class="chip" [ngClass]="{
-        'chip--pass': candidate.prescreeningSelected === 'Selected',
-        'chip--reject': candidate.prescreeningSelected === 'Rejected',
-        'chip--wait': !candidate.prescreeningSelected || candidate.prescreeningSelected === 'Pending'
-      }">{{ candidate.prescreeningSelected || 'Pending' }}</span>
-    </div>
-    <div class="detail-field"><label>Test Date</label><span>{{ candidate.prescreeningTestDate || '—' }}</span></div>
-    <div class="detail-field" *ngIf="candidate.prescreeningTestL
+  private mapUser(spUserField: any): { id: number; title: string; email: string } | null {
+    if (!spUserField) return null;
+    return 
