@@ -1,329 +1,40 @@
-<div class="panel">
-  <h3>Pre-Screening</h3>
-  <div class="detail-grid">
-    <div class="detail-field"><label>Score</label><span>{{ candidate.prescreeningScore || '—' }} / 100</span></div>
-    <div class="detail-field">
-      <label>Result</label>
-      <span class="chip" [ngClass]="{
-        'chip--pass': candidate.prescreeningSelected === 'Selected',
-        'chip--reject': candidate.prescreeningSelected === 'Rejected',
-        'chip--wait': !candidate.prescreeningSelected || candidate.prescreeningSelected === 'Pending'
-      }">{{ candidate.prescreeningSelected || 'Pending' }}</span>
-    </div>
-    <div class="detail-field"><label>Test Date</label><span>{{ candidate.prescreeningTestDate || '—' }}</span></div>
-    <div class="detail-field" *ngIf="candidate.prescreeningTestLink">
-      <label>Test Result</label>
-      <a [href]="candidate.prescreeningTestLink" target="_blank">Hirepro result ↗</a>
-    </div>
-  </div>
-  <div class="comments-block" *ngIf="candidate.prescreeningComments">
-    <label>Comments</label>
-    <p>{{ candidate.prescreeningComments }}</p>
-  </div>
-</div>
-
-
-
-
-
-
-@import '../../../../../styles/panel-shared';
-
-.comments-block {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--cohort-border);
+@import '../../../../styles/panel-shared';
+.overall-block {
   label { font-size: 11px; text-transform: uppercase; color: var(--cohort-muted); }
   p { margin: 6px 0 0; font-size: 14px; color: var(--cohort-text); }
 }
-
-
-
-
-
-
-
-
-
-import { Component, Input, OnChanges } from '@angular/core';
-import { Candidate } from '../../../../core/models/candidate.model';
-import { WorkflowVisibilityService } from '../../../../core/services/workflow-visibility.service';
-
-@Component({
-  selector: 'app-tech-round-panel',
-  templateUrl: './tech-round-panel.component.html',
-  styleUrls: ['./tech-round-panel.component.scss']
-})
-export class TechRoundPanelComponent implements OnChanges {
-  @Input() candidate!: Candidate;
-  @Input() showRound2 = false;
-
-  round1Info: any;
-  round2Info: any;
-
-  constructor(private visibility: WorkflowVisibilityService) {}
-
-  ngOnChanges(): void {
-    this.round1Info = this.visibility.getVisibilityFor(this.candidate, 'techRound1');
-    this.round2Info = this.showRound2
-      ? this.visibility.getVisibilityFor(this.candidate, 'techRound2Mgmt')
-      : null;
-  }
-
-  get tech2Reached(): boolean {
-    return this.candidate.techRound1.selection === 'Selected';
-  }
-}
-
-
-
-
-
-
-
+.round-footer { display: flex; gap: 28px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--cohort-border); }
 
 
 <div class="panel">
-  <div class="panel-header">
-    <h3>Technical Assessment</h3>
-    <span class="lock-badge" *ngIf="round1Info?.locked">🔒 {{ round1Info.lockedMessage }}</span>
+  <h3>HR Round — Final</h3>
+  <div class="overall-block">
+    <label>Overall Feedback</label>
+    <p>{{ candidate.hrRound.interviewFeedback || 'No feedback recorded yet.' }}</p>
   </div>
-
-  <table class="skill-table">
-    <thead>
-      <tr>
-        <th>Skill</th>
-        <th>Screening Score</th>
-        <th>
-          Tech Round 1
-          <span class="col-tag" *ngIf="round1Info?.editable">Your turn</span>
-        </th>
-        <th *ngIf="showRound2 && tech2Reached">
-          Tech 2 / Management
-          <span class="col-tag" *ngIf="round2Info?.editable">Your turn</span>
-        </th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr *ngFor="let skill of candidate.skills">
-        <td class="skill-name">{{ skill.skillName }}</td>
-        <td>{{ skill.screeningScore || '—' }}</td>
-        <td>{{ skill.techRound1Comment || '—' }}</td>
-        <td *ngIf="showRound2 && tech2Reached">{{ skill.techRound2Comment || '—' }}</td>
-      </tr>
-    </tbody>
-  </table>
-
   <div class="round-footer">
+    <div class="detail-field"><label>Interviewed By</label><span>{{ candidate.hrRound.interviewedBy?.title || 'Not assigned' }}</span></div>
+    <div class="detail-field"><label>Interview Date</label><span>{{ candidate.hrRound.interviewDate || '—' }}</span></div>
     <div class="detail-field">
-      <label>Tech Round 1 — Interviewed By</label>
-      <span>{{ candidate.techRound1.interviewedBy?.title || 'Not assigned' }}</span>
-    </div>
-    <div class="detail-field">
-      <label>Tech Round 1 — Decision</label>
+      <label>Decision</label>
       <span class="chip" [ngClass]="{
-        'chip--pass': candidate.techRound1.selection === 'Selected',
-        'chip--reject': candidate.techRound1.selection === 'Rejected',
-        'chip--wait': candidate.techRound1.selection === 'Pending'
-      }">{{ candidate.techRound1.selection }}</span>
+        'chip--pass': candidate.hrRound.selection === 'Selected',
+        'chip--reject': candidate.hrRound.selection === 'Rejected',
+        'chip--wait': candidate.hrRound.selection === 'Pending'
+      }">{{ candidate.hrRound.selection }}</span>
     </div>
-
-    <ng-container *ngIf="showRound2 && tech2Reached">
-      <div class="detail-field">
-        <label>Tech 2 — Interviewed By</label>
-        <span>{{ candidate.techRound2Mgmt.interviewedBy?.title || 'Not assigned' }}</span>
-      </div>
-      <div class="detail-field">
-        <label>Tech 2 — Decision</label>
-        <span class="chip" [ngClass]="{
-          'chip--pass': candidate.techRound2Mgmt.selection === 'Selected',
-          'chip--reject': candidate.techRound2Mgmt.selection === 'Rejected',
-          'chip--wait': candidate.techRound2Mgmt.selection === 'Pending'
-        }">{{ candidate.techRound2Mgmt.selection }}</span>
-      </div>
-    </ng-container>
   </div>
 </div>
-
-
-
-
-
-
-
-
-
-
-@import '../../../../../styles/panel-shared';
-
-.panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 18px;
-  h3 { margin: 0; }
-}
-
-.skill-table {
-  width: 100%;
-  border-collapse: collapse;
-
-  th {
-    text-align: left;
-    font-size: 11px;
-    text-transform: uppercase;
-    color: var(--cohort-muted);
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--cohort-border);
-  }
-
-  td {
-    padding: 10px;
-    font-size: 13.5px;
-    color: var(--cohort-text);
-    border-bottom: 1px solid var(--cohort-border);
-  }
-
-  .skill-name { font-weight: 600; }
-  .col-tag {
-    display: inline-block;
-    margin-left: 6px;
-    font-size: 10px;
-    background: var(--status-pass-bg);
-    color: var(--status-pass-text);
-    padding: 2px 8px;
-    border-radius: 999px;
-    font-weight: 700;
-  }
-
-  tr { transition: background 0.15s ease; }
-  tr:hover td { background: var(--cohort-canvas); }
-}
-
-.round-footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 28px;
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--cohort-border);
-}
-
-
-
-
-
-
-
-
 
 
 import { Component, Input } from '@angular/core';
 import { Candidate } from '../../../../core/models/candidate.model';
 
 @Component({
-  selector: 'app-onshore-panel',
-  templateUrl: './onshore-panel.component.html',
-  styleUrls: ['./onshore-panel.component.scss']
+  selector: 'app-hr-panel',
+  templateUrl: './hr-panel.component.html',
+  styleUrls: ['./hr-panel.component.scss']
 })
-export class OnshorePanelComponent {
+export class HrPanelComponent {
   @Input() candidate!: Candidate;
 }
-
-
-
-
-
-
-
-
-
-<div class="panel">
-  <h3>On-Shore Round</h3>
-  <div class="overall-block">
-    <label>Overall Feedback</label>
-    <p>{{ candidate.onShoreRound.interviewFeedback || 'No feedback recorded yet.' }}</p>
-  </div>
-  <div class="round-footer">
-    <div class="detail-field"><label>Interviewed By</label><span>{{ candidate.onShoreRound.interviewedBy?.title || 'Not assigned' }}</span></div>
-    <div class="detail-field"><label>Interview Date</label><span>{{ candidate.onShoreRound.interviewDate || '—' }}</span></div>
-    <div class="detail-field">
-      <label>Decision</label>
-      <span class="chip" [ngClass]="{
-        'chip--pass': candidate.onShoreRound.selection === 'Selected',
-        'chip--reject': candidate.onShoreRound.selection === 'Rejected',
-        'chip--wait': candidate.onShoreRound.selection === 'Pending'
-      }">{{ candidate.onShoreRound.selection }}</span>
-    </div>
-  </div>
-</div>
-
-
-
-
-
-
-
-
-
-
-@import '../../../../../styles/panel-shared';
-.overall-block {
-  label { font-size: 11px; text-transform: uppercase; color: var(--cohort-muted); }
-  p { margin: 6px 0 0; font-size: 14px; color: var(--cohort-text); }
-}
-.round-footer { display: flex; gap: 28px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--cohort-border); 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import { NgModule } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { RouterModule, Routes } from '@angular/router';
-
-import { SharedModule } from '../../shared/shared.module';
-import { CandidateDetailComponent } from './candidate-detail.component';
-import { GeneralDetailsPanelComponent } from './components/general-details-panel/general-details-panel.component';
-import { PrescreenPanelComponent } from './components/prescreen-panel/prescreen-panel.component';
-import { TechRoundPanelComponent } from './components/tech-round-panel/tech-round-panel.component';
-import { OnshorePanelComponent } from './components/onshore-panel/onshore-panel.component';
-import { HrPanelComponent } from './components/hr-panel/hr-panel.component';
-
-const routes: Routes = [{ path: '', component: CandidateDetailComponent }];
-
-@NgModule({
-  declarations: [
-    CandidateDetailComponent,
-    GeneralDetailsPanelComponent,
-    PrescreenPanelComponent,
-    TechRoundPanelComponent,
-    OnshorePanelComponent,
-    HrPanelComponent
-  ],
-  imports: [CommonModule, FormsModule, SharedModule, RouterModule.forChild(routes)]
-})
-export class CandidateDetailModule {}
-
-
-
-
-
-
-
-
-
-
-
-
