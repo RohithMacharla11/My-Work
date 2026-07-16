@@ -1,131 +1,36 @@
-import { Component, OnInit } from '@angular/core';
-import { ActivatedRoute, Router } from '@angular/router';
-import { CandidateService } from '../../core/services/candidate.service';
-import { WorkflowVisibilityService } from '../../core/services/workflow-visibility.service';
-import { Candidate } from '../../core/models/candidate.model';
-import { RoundStatus } from '../../core/models/round-status.enum';
+import { Component } from '@angular/core';
+import { ICellRendererAngularComp } from 'ag-grid-angular';
+import { ICellRendererParams } from 'ag-grid-community';
+import { Candidate } from '../../../core/models/candidate.model';
+import { RoundStatus } from '../../../core/models/round-status.enum';
+import { WorkflowVisibilityService } from '../../../core/services/workflow-visibility.service';
 
 @Component({
-  selector: 'app-candidate-detail',
-  templateUrl: './candidate-detail.component.html',
-  styleUrls: ['./candidate-detail.component.scss']
+  selector: 'app-workflow-pipeline-cell',
+  template: `<span class="wf-label">{{ label }}</span>`,
+  styleUrls: ['./workflow-pipeline-cell.component.scss']
 })
-export class CandidateDetailComponent implements OnInit {
+export class WorkflowPipelineCellComponent implements ICellRendererAngularComp {
+  label = '';
 
-  candidate: Candidate | null = null;
-  loading = true;
-  errorMessage: string | null = null;
-  heroExpanded = false;
+  constructor(private visibility: WorkflowVisibilityService) {}
 
-  constructor(
-    private route: ActivatedRoute,
-    private router: Router,
-    private candidateService: CandidateService,
-    public visibility: WorkflowVisibilityService
-  ) {}
-
-  ngOnInit(): void {
-    const source = this.route.snapshot.paramMap.get('source') as 'Chennai' | 'Mumbai';
-    const id = Number(this.route.snapshot.paramMap.get('id'));
-    this.loadCandidate(source, id);
+  agInit(params: ICellRendererParams): void {
+    this.label = this.deriveLabel(params.data);
   }
 
-  private loadCandidate(source: 'Chennai' | 'Mumbai', id: number): void {
-    this.loading = true;
-    this.errorMessage = null;
+  refresh(): boolean { return false; }
 
-    this.candidateService.getAllCandidates().subscribe({
-      next: (candidates) => {
-        const found = candidates.find(c => c.listSource === source && c.id === id);
-        if (!found) {
-          this.errorMessage = 'Candidate not found.';
-          this.loading = false;
-          return;
-        }
-        if (!this.visibility.canOpenCandidate(found)) {
-          this.errorMessage = 'This candidate is not assigned to you.';
-          this.loading = false;
-          return;
-        }
-        this.candidate = found;
-        this.loading = false;
-      },
-      error: () => {
-        this.errorMessage = 'Could not load candidate details from SharePoint.';
-        this.loading = false;
-      }
-    });
-  }
-
-  toggleHero(): void {
-    this.heroExpanded = !this.heroExpanded;
-  }
-
-  goBack(): void {
-    this.router.navigate(['/dashboard']);
-  }
-
-  scrollTo(sectionId: string): void {
-    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
-  get candidateInitials(): string {
-    if (!this.candidate?.candidateName) return '';
-    return this.candidate.candidateName
-      .split(' ')
-      .map(n => n[0])
-      .join('')
-      .substring(0, 2)
-      .toUpperCase();
-  }
-
-  /** True when the header should show email/phone/role inline (collapsed state). */
-  get headerFieldsCollapsed(): boolean {
-    return !this.heroExpanded;
-  }
-
-  get stageLabel(): string {
-    if (!this.candidate) return '';
-    const c = this.candidate;
-
+  private deriveLabel(c: Candidate): string {
     if (c.hrRound.selection === RoundStatus.Selected) return 'Offer Stage';
     if (c.onShoreRound.selection === RoundStatus.Selected) return 'HR Round';
     if (c.mgmtRound.selection === RoundStatus.Selected) return 'On-Shore Round';
     if (this.visibility.techStageDecision(c) === RoundStatus.Selected) return 'Management Round';
     if (c.techRound1.selection === RoundStatus.Selected) return 'Tech Round 2';
     if (c.prescreeningSelected === RoundStatus.Selected) return 'Tech Round 1';
-
     if (this.visibility.techStageDecision(c) === RoundStatus.Rejected
       || c.mgmtRound.selection === RoundStatus.Rejected
-      || c.onShoreRound.selection === RoundStatus.Rejected) {
-      return 'Rejected';
-    }
+      || c.onShoreRound.selection === RoundStatus.Rejected) return 'Rejected';
     return 'Pre-Screen';
-  }
-
-  // ---------- Section visibility gates, driven by WorkflowVisibilityService ----------
-
-  get showPreScreen(): boolean {
-    return !!this.candidate;
-  }
-
-  get showTechTable(): boolean {
-    if (!this.candidate) return false;
-    return this.candidate.prescreeningSelected === RoundStatus.Selected;
-  }
-
-  get showMgmt(): boolean {
-    if (!this.candidate) return false;
-    return this.visibility.isMgmtReachable(this.candidate);
-  }
-
-  get showOnShore(): boolean {
-    if (!this.candidate) return false;
-    return this.visibility.isOnShoreReachable(this.candidate);
-  }
-
-  get showHr(): boolean {
-    if (!this.candidate) return false;
-    return this.visibility.isHrReachable(this.candidate);
   }
 }
