@@ -1,85 +1,12 @@
-Found it — this is a real bug, not a config issue, plus one design fix needed. Let me walk through both.
+You've found four real bugs plus two regressions. Let's fix all of them properly.
 
-## Bug 1: The core lock bug (this is the big one)
+## Root cause of bugs #1–#3: "mine-locked" was being treated as "still open"
 
-SharePoint returns `{"__deferred": {...}}` for empty Person/Lookup fields when they're not properly expanded — not `null`. Your `mapUser()` only checks `if (!f) return null`, but `{__deferred: {...}}` is a **truthy object**, so it slips past that check and builds a fake user with `id: undefined`. That fake "assigned" user then makes `getAccess()` think every round is already claimed by someone else — hence everything shows **Locked** instead of **Assign to Me**, for every role except HR Admin (which never checks `assignedTo` at all, which is why it "works perfectly").
+Once a round is finalized, `getAccess()` correctly returns `mine-locked` — but `getDashboardAction()` was treating *any* `mine-locked`/`mine-editable` round in your role list as reason to show **Open**, even for rounds you already finished. That's why Tech Round 1 kept showing Open after you submitted it, and why Management Panel still saw Open once they'd already completed Management Round and the candidate moved to On-Shore.
 
-**Fix — `candidate.service.ts`, `mapUser()`:**
-```typescript
-private mapUser(f: any): SharePointUser | null {
-  if (!f) return null;
-  const id = f.Id ?? f.results?.[0]?.Id;
-  if (!id) return null; // catches {__deferred:...} and empty results arrays
-  return {
-    id,
-    title: f.Title ?? f.results?.[0]?.Title,
-    email: f.EMail ?? f.results?.[0]?.EMail
-  };
-}
-```
+**Fix**: only look at the candidate's *currently active* round (the one that's reached-but-not-yet-finalized) — never a round you already completed.
 
-## Bug 2: HR Admin was editing, not just assigning
-
-You're right — HR Admin should be **read-only viewer + assigner only**, never fill feedback. Currently `getAccess()` gives HR Admin `editable: true` on every round.
-
-## Bug 3: Detail page didn't gate sections by role
-
-Even once you can open a candidate, a Tech Panel member would see Management/On-Shore/HR sections too — they should stop at Tech Round 2.
-
-## Bug 4: On-Shore/HR field name casing
-
-Your real SharePoint schema uses `OnshoreRound...` (lowercase `s`), but the write calls use `OnShoreRound...`. A mismatched field name makes SharePoint reject the PATCH — and since nothing surfaced the error, it looked like nothing happened at all.
-
----
-
-## `core/services/current-user.service.ts` (real fetch, switchable role for testing)
-
-```typescript
-import { Injectable } from '@angular/core';
-import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { Observable, of } from 'rxjs';
-import { catchError, map } from 'rxjs/operators';
-
-export type UserRole = 'HrAdmin' | 'Recruiter' | 'TechPanel' | 'MgmtPanel' | 'OnShorePanel' | 'HrPanel';
-
-export interface CurrentUser {
-  id: number;
-  title: string;
-  email: string;
-  role: UserRole;
-}
-
-/** ===== SWITCH THIS to test each role while real group→role mapping isn't wired yet. ===== */
-const TEST_ROLE: UserRole = 'TechPanel';
-
-@Injectable({ providedIn: 'root' })
-export class CurrentUserService {
-  private readonly siteUrl = '/sites/CohortHiring';
-  private user: CurrentUser = { id: 0, title: 'Loading...', email: '', role: TEST_ROLE };
-
-  constructor(private http: HttpClient) {}
-
-  get(): CurrentUser { return this.user; }
-
-  loadCurrentUser(): Observable<CurrentUser> {
-    const headers = new HttpHeaders({ 'Accept': 'application/json;odata=verbose' });
-    return this.http.get<any>(`${this.siteUrl}/_api/web/currentuser`, { headers }).pipe(
-      map(res => {
-        this.user = { id: res.d.Id, title: res.d.Title, email: res.d.Email, role: TEST_ROLE };
-        return this.user;
-      }),
-      catchError(() => {
-        this.user = { id: 0, title: 'Unknown User', email: '', role: TEST_ROLE };
-        return of(this.user);
-      })
-    );
-  }
-}
-```
-
-This uses the real logged-in ID (matching what you're seeing in the topbar, "tec.Rohith MACHARLA") while letting you flip `TEST_ROLE` to test each role's behavior against real assigned-by-name data.
-
-## `core/services/workflow-visibility.service.ts` (corrected `getAccess`, added section gating)
+## `core/services/workflow-visibility.service.ts` (updated — active-round logic + refresh-friendly)
 
 ```typescript
 import { Injectable } from '@angular/core';
@@ -110,8 +37,6 @@ const ROLE_ROUNDS: Record<UserRole, RoundKey[]> = {
 export class WorkflowVisibilityService {
   constructor(private currentUser: CurrentUserService) {}
 
-  // ---------- Stage readiness (unchanged) ----------
-
   techStageDecision(candidate: Candidate): RoundStatus {
     const r1 = candidate.techRound1.selection;
     const r2 = candidate.techRound2.selection;
@@ -127,7 +52,6 @@ export class WorkflowVisibilityService {
     return candidate.techRound1.selection === RoundStatus.Selected
       && candidate.techRound2.selection !== RoundStatus.NotApplicable;
   }
-
   isMgmtReachable(candidate: Candidate): boolean { return this.techStageDecision(candidate) === RoundStatus.Selected; }
   isOnShoreReachable(candidate: Candidate): boolean { return candidate.mgmtRound.selection === RoundStatus.Selected; }
   isHrReachable(candidate: Candidate): boolean { return candidate.onShoreRound.selection === RoundStatus.Selected; }
@@ -142,13 +66,17 @@ export class WorkflowVisibilityService {
     }
   }
 
+  /** True only while the round is reached AND not yet finalized. */
+  private isRoundActive(candidate: Candidate, round: RoundKey): boolean {
+    if (round === 'techRound2' && candidate.techRound2.selection === RoundStatus.NotApplicable) return false;
+    return this.hasCandidateReached(candidate, round) && candidate[round].selection === RoundStatus.Pending;
+  }
+
   techRound2NotYetDecided(candidate: Candidate): boolean {
     return candidate.techRound1.selection === RoundStatus.Selected
       && candidate.techRound2.selection === RoundStatus.Pending
       && !candidate.techRound2.interviewedBy;
   }
-
-  // ---------- Per-round access ----------
 
   getAccess(candidate: Candidate, round: RoundKey): RoundAccess {
     if (!this.hasCandidateReached(candidate, round)) {
@@ -157,16 +85,12 @@ export class WorkflowVisibilityService {
 
     const user = this.currentUser.get();
 
-    // HR Admin: read-only viewer everywhere. Assignment for On-Shore/HR is a
-    // separate action (people-picker), never a feedback-editing state.
     if (user.role === 'HrAdmin' || user.role === 'Recruiter') {
-      return { state: 'mine-locked' };
+      return { state: 'mine-locked' }; // always read-only viewer, never editable
     }
 
     const myRounds = ROLE_ROUNDS[user.role];
-    if (!myRounds.includes(round)) {
-      return { state: 'no-access' };
-    }
+    if (!myRounds.includes(round)) return { state: 'no-access' };
 
     const assignedTo = candidate[round].interviewedBy;
     const finalized = candidate[round].selection !== RoundStatus.Pending;
@@ -176,15 +100,12 @@ export class WorkflowVisibilityService {
         ? { state: 'assignable' }
         : { state: 'not-reached', message: 'Waiting for HR Admin to assign an interviewer.' };
     }
-
     if (assignedTo.id !== user.id) {
       return { state: 'locked-other', message: `Assigned to ${assignedTo.title}.` };
     }
-
     return finalized ? { state: 'mine-locked' } : { state: 'mine-editable' };
   }
 
-  /** Section-level gate for the detail page — stops rendering past the viewer's own round. */
   canViewRoundSection(round: RoundKey): boolean {
     const user = this.currentUser.get();
     if (user.role === 'HrAdmin' || user.role === 'Recruiter') return true;
@@ -194,94 +115,322 @@ export class WorkflowVisibilityService {
     return SECTION_ORDER.indexOf(round) <= maxIdx;
   }
 
+  /** The single round this candidate is actively sitting at, restricted to the viewer's own rounds. Null if none. */
+  private getMyActiveRound(candidate: Candidate): RoundKey | null {
+    const user = this.currentUser.get();
+    const myRounds = ROLE_ROUNDS[user.role];
+    for (const r of myRounds) {
+      if (this.isRoundActive(candidate, r)) return r;
+    }
+    return null;
+  }
+
   canOpenCandidate(candidate: Candidate): boolean {
     const user = this.currentUser.get();
     if (user.role === 'HrAdmin' || user.role === 'Recruiter') return true;
 
-    const myRounds = ROLE_ROUNDS[user.role];
-    for (const r of myRounds) {
-      const access = this.getAccess(candidate, r);
-      if (access.state === 'mine-editable' || access.state === 'mine-locked') return true;
-    }
-    return false;
+    const active = this.getMyActiveRound(candidate);
+    if (!active) return false;
+    const access = this.getAccess(candidate, active);
+    return access.state === 'mine-editable' || access.state === 'mine-locked';
   }
 
+  /** Dashboard action — driven ONLY by the candidate's current active round, never a finished one. */
   getDashboardAction(candidate: Candidate): 'open' | 'assignable' | 'locked' | 'not-in-workflow' {
     const user = this.currentUser.get();
     if (user.role === 'HrAdmin' || user.role === 'Recruiter') return 'open';
 
-    const myRounds = ROLE_ROUNDS[user.role];
-    let sawNotReached = 0;
-    for (const r of myRounds) {
-      const access = this.getAccess(candidate, r);
-      if (access.state === 'mine-editable' || access.state === 'mine-locked') return 'open';
-      if (access.state === 'assignable') return 'assignable';
-      if (access.state === 'not-reached') sawNotReached++;
-    }
-    return sawNotReached === myRounds.length ? 'not-in-workflow' : 'locked';
+    const active = this.getMyActiveRound(candidate);
+    if (!active) return 'not-in-workflow'; // nothing pending in this viewer's rounds right now
+
+    const access = this.getAccess(candidate, active);
+    if (access.state === 'mine-editable' || access.state === 'mine-locked') return 'open';
+    if (access.state === 'assignable') return 'assignable';
+    return 'locked';
   }
 
   roundFieldPrefix(round: RoundKey): string {
     const map: Record<RoundKey, string> = {
       techRound1: 'TechRound1', techRound2: 'TechRound2', mgmtRound: 'MgmtRound',
-      onShoreRound: 'OnshoreRound', hrRound: 'HrRound' // matches real SharePoint casing
+      onShoreRound: 'OnshoreRound', hrRound: 'HrRound'
     };
     return map[round];
   }
 }
 ```
 
-## `candidate-detail.component.ts` — add section gating
+## Bug: page-refresh needed after Assign
 
-Replace the four section getters:
+`gridApi.refreshCells({ force: true })` doesn't reliably re-run function-based `cellRenderer`s in every AG Grid version. Use `applyTransaction` instead — it properly re-renders the specific row.
+
+**`candidate-dashboard.component.ts`** (full rewrite — also restores stats, restores stage filter, adds server-side filtering)
 
 ```typescript
-get showTechTable(): boolean {
-  if (!this.candidate) return false;
-  return this.visibility.canViewRoundSection('techRound1') && this.candidate.prescreeningSelected === RoundStatus.Selected;
-}
-get showMgmt(): boolean {
-  if (!this.candidate) return false;
-  return this.visibility.canViewRoundSection('mgmtRound') && this.visibility.isMgmtReachable(this.candidate);
-}
-get showOnShore(): boolean {
-  if (!this.candidate) return false;
-  return this.visibility.canViewRoundSection('onShoreRound') && this.visibility.isOnShoreReachable(this.candidate);
-}
-get showHr(): boolean {
-  if (!this.candidate) return false;
-  return this.visibility.canViewRoundSection('hrRound') && this.visibility.isHrReachable(this.candidate);
+import { Component, OnInit } from '@angular/core';
+import { Router } from '@angular/router';
+import { ColDef, GridOptions, GridApi, GridReadyEvent } from 'ag-grid-community';
+import { Subject, debounceTime } from 'rxjs';
+import { CandidateService } from '../../core/services/candidate.service';
+import { WorkflowVisibilityService } from '../../core/services/workflow-visibility.service';
+import { CurrentUserService } from '../../core/services/current-user.service';
+import { Candidate } from '../../core/models/candidate.model';
+import { RoundStatus } from '../../core/models/round-status.enum';
+import { WorkflowPipelineCellComponent } from '../../shared/components/workflow-pipeline-cell/workflow-pipeline-cell.component';
+
+@Component({
+  selector: 'app-candidate-dashboard',
+  templateUrl: './candidate-dashboard.component.html',
+  styleUrls: ['./candidate-dashboard.component.scss']
+})
+export class CandidateDashboardComponent implements OnInit {
+
+  rowData: Candidate[] = [];
+  selectedRows: Candidate[] = [];
+
+  quickFilterText = '';
+  stageFilter = 'all';
+  profileFilter = 'all';
+  locationFilter = 'all';
+  profileOptions: string[] = [];
+  locationOptions: string[] = [];
+
+  loading = true;
+  errorMessage: string | null = null;
+  gridApi!: GridApi;
+
+  showSkipDialog = false;
+  pendingSkipCandidates: Candidate[] = [];
+
+  stats = { total: 0, active: 0, offer: 0, rejected: 0 };
+
+  private searchTrigger = new Subject<void>();
+
+  columnDefs: ColDef[] = [];
+
+  gridOptions: GridOptions = {
+    rowHeight: 72,
+    headerHeight: 46,
+    rowSelection: 'multiple',
+    suppressRowClickSelection: true,
+    animateRows: true,
+    domLayout: 'autoHeight',
+    getRowId: (params) => `${params.data.listSource}-${params.data.id}`,
+    onSelectionChanged: () => { this.selectedRows = this.gridApi?.getSelectedRows() || []; }
+  };
+
+  constructor(
+    private candidateService: CandidateService,
+    private router: Router,
+    public visibility: WorkflowVisibilityService,
+    private currentUser: CurrentUserService
+  ) {
+    this.searchTrigger.pipe(debounceTime(400)).subscribe(() => this.loadCandidates());
+  }
+
+  ngOnInit(): void {
+    this.buildColumns();
+    this.loadCandidates();
+  }
+
+  get isMultiAssignRole(): boolean {
+    return ['TechPanel', 'MgmtPanel'].includes(this.currentUser.get().role);
+  }
+
+  private buildColumns(): void {
+    const showCheckbox = this.isMultiAssignRole;
+    this.columnDefs = [
+      ...(showCheckbox ? [{ headerCheckboxSelection: true, checkboxSelection: true, width: 48, pinned: 'left' as const, sortable: false, filter: false }] : []),
+      {
+        headerName: 'Candidate', field: 'candidateName', flex: 2, minWidth: 220,
+        cellRenderer: (p: any) => `
+          <div class="candidate-cell">
+            <div class="avatar">${this.initials(p.data.candidateName)}</div>
+            <div class="candidate-meta">
+              <div class="name">${p.data.candidateName || 'Unnamed'}</div>
+              <div class="sub">${p.data.candidateEmailId || '—'} · ID ${p.data.candidateId || '—'}</div>
+            </div>
+          </div>`
+      },
+      { headerName: 'Role / Profile', flex: 1.2, minWidth: 170, valueGetter: (p: any) => `${p.data.roleDesignation || '—'} · ${p.data.profile || '—'}` },
+      { headerName: 'Location', field: 'location', flex: 0.8, minWidth: 110, valueFormatter: (p: any) => p.value || '—' },
+      {
+        headerName: 'Pre-Screen', flex: 1, minWidth: 140,
+        cellRenderer: (p: any) => {
+          const score = p.data.prescreeningScore; const result = p.data.prescreeningSelected;
+          if (!score && !result) return `<span class="muted-pill">Not started</span>`;
+          const cls = result === 'Selected' ? 'pass' : result === 'Rejected' ? 'reject' : 'wait';
+          return `<span class="score-pill">${score ?? '—'}/100</span><span class="chip chip--${cls}">${result || 'Pending'}</span>`;
+        }
+      },
+      { headerName: 'Stage', flex: 1.6, minWidth: 190, cellRenderer: WorkflowPipelineCellComponent },
+      {
+        headerName: '', flex: 1.1, minWidth: 130, sortable: false, filter: false,
+        cellRenderer: (p: any) => this.actionCellHtml(p.data),
+        onCellClicked: (p: any) => this.onActionClick(p.data)
+      }
+    ];
+  }
+
+  private buildFilterClause(): string | undefined {
+    const clauses: string[] = [];
+    const q = this.quickFilterText.trim();
+    if (q) {
+      const fields = ['CandidateName', 'CandidateEmailId', 'CandidatePhoneNumber', 'CandidateId', 'RoleDesignation', 'Profile', 'Location'];
+      const orClause = fields.map(f => `substringof('${this.escapeODataValue(q)}',${f})`).join(' or ');
+      clauses.push(`(${orClause})`);
+    }
+    if (this.profileFilter !== 'all') clauses.push(`Profile eq '${this.escapeODataValue(this.profileFilter)}'`);
+    if (this.locationFilter !== 'all') clauses.push(`Location eq '${this.escapeODataValue(this.locationFilter)}'`);
+    return clauses.length ? clauses.join(' and ') : undefined;
+  }
+
+  private escapeODataValue(v: string): string { return v.replace(/'/g, "''"); }
+
+  loadCandidates(): void {
+    this.loading = true;
+    this.errorMessage = null;
+    const filter = this.buildFilterClause();
+
+    this.candidateService.getAllCandidates(filter).subscribe({
+      next: (candidates) => {
+        let filtered = candidates;
+        if (this.stageFilter !== 'all') {
+          filtered = candidates.filter(c => this.matchesStage(c, this.stageFilter));
+        }
+        this.rowData = filtered;
+        this.deriveFilterOptions(candidates);
+        this.computeStats(candidates);
+        this.loading = false;
+      },
+      error: () => {
+        this.errorMessage = 'This query is too large for SharePoint to run. A column used in the filter needs to be indexed.';
+        this.loading = false;
+      }
+    });
+  }
+
+  private matchesStage(c: Candidate, stage: string): boolean {
+    const map: Record<string, () => boolean> = {
+      preScreen: () => c.prescreeningSelected !== RoundStatus.Selected,
+      techRound1: () => c.prescreeningSelected === RoundStatus.Selected && c.techRound1.selection !== RoundStatus.Selected,
+      techRound2: () => c.techRound1.selection === RoundStatus.Selected && this.visibility.techStageDecision(c) !== RoundStatus.Selected && c.techRound2.selection !== RoundStatus.NotApplicable,
+      mgmtRound: () => this.visibility.techStageDecision(c) === RoundStatus.Selected && c.mgmtRound.selection !== RoundStatus.Selected,
+      onShoreRound: () => c.mgmtRound.selection === RoundStatus.Selected && c.onShoreRound.selection !== RoundStatus.Selected,
+      hrRound: () => c.onShoreRound.selection === RoundStatus.Selected && c.hrRound.selection !== RoundStatus.Selected,
+      offer: () => c.hrRound.selection === RoundStatus.Selected,
+      rejected: () => this.visibility.techStageDecision(c) === RoundStatus.Rejected || c.mgmtRound.selection === RoundStatus.Rejected || c.onShoreRound.selection === RoundStatus.Rejected || c.prescreeningSelected === RoundStatus.Rejected
+    };
+    return map[stage] ? map[stage]() : true;
+  }
+
+  private deriveFilterOptions(candidates: Candidate[]): void {
+    this.profileOptions = [...new Set(candidates.map(c => c.profile).filter(Boolean))];
+    this.locationOptions = [...new Set(candidates.map(c => c.location).filter(Boolean))];
+  }
+
+  private computeStats(candidates: Candidate[]): void {
+    this.stats.total = candidates.length;
+    this.stats.rejected = candidates.filter(c => this.matchesStage(c, 'rejected')).length;
+    this.stats.offer = candidates.filter(c => c.hrRound.selection === RoundStatus.Selected).length;
+    this.stats.active = this.stats.total - this.stats.rejected - this.stats.offer;
+  }
+
+  onGridReady(p: GridReadyEvent): void { this.gridApi = p.api; }
+  onSearchChange(): void { this.searchTrigger.next(); }
+  onFilterChange(): void { this.loadCandidates(); }
+  resetFilters(): void { this.quickFilterText = ''; this.stageFilter = 'all'; this.profileFilter = 'all'; this.locationFilter = 'all'; this.loadCandidates(); }
+
+  private actionCellHtml(c: Candidate): string {
+    const action = this.visibility.getDashboardAction(c);
+    if (action === 'open') return `<button class="open-btn">Open ↗</button>`;
+    if (action === 'assignable') return `<button class="assign-btn">Assign to Me</button>`;
+    if (action === 'not-in-workflow') return `<span class="locked-pill">Not in your workflow</span>`;
+    return `<span class="locked-pill">🔒 Locked</span>`;
+  }
+
+  private onActionClick(c: Candidate): void {
+    const action = this.visibility.getDashboardAction(c);
+    if (action === 'open') this.openCandidate(c);
+    if (action === 'assignable') this.assignSingle(c);
+  }
+
+  openCandidate(c: Candidate): void { this.router.navigate(['/candidates', c.listSource, c.id]); }
+  assignSingle(c: Candidate): void { this.tryAssign([c]); }
+  assignSelected(): void { if (this.selectedRows.length) this.tryAssign(this.selectedRows); }
+
+  private tryAssign(candidates: Candidate[]): void {
+    const role = this.currentUser.get().role;
+    if (role === 'MgmtPanel') {
+      const skipNeeded = candidates.filter(c => this.visibility.techRound2NotYetDecided(c));
+      if (skipNeeded.length) {
+        this.pendingSkipCandidates = skipNeeded;
+        this.showSkipDialog = true;
+        const rest = candidates.filter(c => !skipNeeded.includes(c));
+        this.doAssign(rest, 'mgmtRound');
+        return;
+      }
+      this.doAssign(candidates, 'mgmtRound');
+      return;
+    }
+    if (role === 'TechPanel') {
+      candidates.forEach(c => {
+        const round = c.techRound1.selection === RoundStatus.Selected ? 'techRound2' : 'techRound1';
+        this.doAssign([c], round as any);
+      });
+    }
+  }
+
+  get pendingSkipNames(): string[] { return this.pendingSkipCandidates.map(c => c.candidateName); }
+
+  confirmSkip(): void {
+    this.pendingSkipCandidates.forEach(c => { c.techRound2.selection = RoundStatus.NotApplicable; });
+    this.doAssign(this.pendingSkipCandidates, 'mgmtRound');
+    this.showSkipDialog = false;
+    this.pendingSkipCandidates = [];
+  }
+  cancelSkip(): void { this.showSkipDialog = false; this.pendingSkipCandidates = []; }
+
+  private doAssign(candidates: Candidate[], round: 'techRound1' | 'techRound2' | 'mgmtRound'): void {
+    const user = this.currentUser.get();
+    const spUser = { id: user.id, title: user.title, email: user.email };
+    const prefix = this.visibility.roundFieldPrefix(round);
+    candidates.forEach(c => {
+      this.candidateService.assignUserToRound(c, prefix, spUser).subscribe({
+        next: () => {
+          (c as any)[round].interviewedBy = spUser;
+          this.gridApi?.applyTransaction({ update: [c] }); // refresh just this row, no reload needed
+        },
+        error: (err) => { console.error('Assign failed:', err); alert('Could not assign — check console.'); }
+      });
+    });
+  }
+
+  private initials(name: string): string {
+    if (!name) return '?';
+    return name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+  }
 }
 ```
 
-## Fix the On-Shore casing in the two admin-assign panels
+## `candidate-dashboard.component.html` (restored stats + full filters + assign bar)
 
-**`onshore-panel.component.ts`** — change every `'OnShoreRound...'` field string to `'OnshoreRound...'`:
-```typescript
-this.candidateService.assignUserToRound(this.candidate, 'OnshoreRound', user)...
-// and in submit():
-const fields = {
-  OnshoreRoundDepartment: this.department,
-  OnshoreRoundInterviewSelection: this.decision,
-  OnshoreRoundInterviewDate: new Date().toISOString().split('T')[0]
-};
-```
+```html
+<div class="dashboard-container">
+  <header class="dashboard-header"><h4>Recruitment Pipeline</h4><h1>Candidates</h1></header>
 
-`hr-panel.component.ts` fields were already `HrRound...` — no change needed there.
+  <div class="stat-strip" *ngIf="!loading && !errorMessage">
+    <div class="stat-card"><div class="stat-value">{{ stats.total }}</div><div class="stat-label">Total Candidates</div></div>
+    <div class="stat-card stat-card--active"><div class="stat-value">{{ stats.active }}</div><div class="stat-label">In Progress</div></div>
+    <div class="stat-card stat-card--pass"><div class="stat-value">{{ stats.offer }}</div><div class="stat-label">Offer Stage</div></div>
+    <div class="stat-card stat-card--reject"><div class="stat-value">{{ stats.rejected }}</div><div class="stat-label">Rejected</div></div>
+  </div>
 
-## Add error visibility to writes (so failures aren't silent)
-
-In every `.subscribe()` call across the panels and dashboard, add an error branch so a rejected PATCH actually tells you instead of doing nothing:
-
-```typescript
-this.candidateService.assignUserToRound(this.candidate, prefix, spUser).subscribe({
-  next: () => { /* existing success logic */ },
-  error: (err) => { console.error('Assign failed:', err); alert('Could not assign — check console for details.'); }
-});
-```
-
-Apply that `{ next, error }` pattern to every `subscribe()` in `tech-round-panel`, `mgmt-panel`, `onshore-panel`, `hr-panel`, and the dashboard's `doAssign()`.
-
----
-
-Fix `mapUser()` first — that alone should unlock the whole dashboard for Tech Panel. Then apply the rest. Rebuild and test with `TEST_ROLE = 'TechPanel'` against Rahul Mehta (unassigned Tech Round 1) — should now show **Assign to Me**. Let me know what you see.
+  <div class="dashboard-toolbar" *ngIf="!loading && !errorMessage">
+    <input type="text" class="search-input" placeholder="Search name, email, phone, ID, role, profile or location..."
+      [(ngModel)]="quickFilterText" (ngModelChange)="onSearchChange()" />
+    <select class="filter-select" [(ngModel)]="stageFilter" (ngModelChange)="onFilterChange()">
+      <option value="all">All Stages</option>
+      <option value="preScreen">Pre-Screen</option>
+      <option value="techRound1">Tech Round 1</option>
+      <option value="techRound2">Tech Round 2</option>
+      <option
