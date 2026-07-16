@@ -1,26 +1,1383 @@
-.detail-page { padding: 24px 32px 64px; background: var(--cohort-canvas); min-height: 100%; }
-.detail-topbar { margin-bottom: 16px; }
-.back-link { background: none; border: none; color: var(--cohort-primary); font-weight: 600; font-size: 13.5px; cursor: pointer; padding: 0; transition: opacity 0.15s ease; &:hover { opacity: 0.65; } }
+import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { SharePointUser } from '../../../core/models/candidate.model';
+import { CandidateService } from '../../../core/services/candidate.service';
+import { debounceTime, Subject } from 'rxjs';
 
-.candidate-hero { background: white; border: 1px solid var(--cohort-border); border-radius: 12px; padding: 20px 24px; margin-bottom: 16px; animation: fadeUp 0.25s ease; }
-.hero-main { display: flex; align-items: center; gap: 18px; }
-.hero-avatar { width: 56px; height: 56px; border-radius: 14px; background: var(--cohort-primary); color: white; font-size: 20px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.hero-info { flex: 1; h1 { margin: 0 0 4px; font-size: 20px; color: var(--cohort-text); } .hero-meta { font-size: 13px; color: var(--cohort-muted); .dot { margin: 0 6px; } } }
-.hero-id { text-align: right; .id-label { font-size: 10px; text-transform: uppercase; color: var(--cohort-muted); letter-spacing: 0.05em; } .id-value { font-weight: 700; color: var(--cohort-primary); font-size: 14px; } }
+@Component({
+  selector: 'app-people-picker',
+  templateUrl: './people-picker.component.html',
+  styleUrls: ['./people-picker.component.scss']
+})
+export class PeoplePickerComponent {
+  @Input() placeholder = 'Search for a person...';
+  @Output() picked = new EventEmitter<SharePointUser>();
 
-.expand-btn { background: none; border: none; color: var(--cohort-primary); font-size: 12.5px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; &:hover { opacity: 0.7; } }
-.chevron { transition: transform 0.2s ease; &--open { transform: rotate(180deg); } }
-.hero-expand { max-height: 0; overflow: hidden; opacity: 0; transition: max-height 0.25s ease, opacity 0.2s ease, margin-top 0.25s ease;
-  &--open { max-height: 260px; opacity: 1; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--cohort-border); } }
-.detail-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px 24px; }
-.detail-field { display: flex; flex-direction: column; gap: 4px; label { font-size: 11px; text-transform: uppercase; color: var(--cohort-muted); } span, a { font-size: 14px; color: var(--cohort-text); font-weight: 500; } a { color: var(--cohort-primary); text-decoration: none; &:hover { text-decoration: underline; } } }
+  query = '';
+  results: SharePointUser[] = [];
+  open = false;
+  private search$ = new Subject<string>();
 
-.jump-nav { position: sticky; top: 0; z-index: 5; display: flex; gap: 8px; background: var(--cohort-canvas); padding: 10px 0 16px;
-  button { background: white; border: 1px solid var(--cohort-border); color: var(--cohort-muted); padding: 7px 16px; border-radius: 999px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: all 0.15s ease;
-    &:hover { border-color: var(--cohort-primary); color: var(--cohort-primary); transform: translateY(-1px); } } }
+  constructor(private candidateService: CandidateService) {
+    this.search$.pipe(debounceTime(300)).subscribe(q => {
+      if (q.trim().length < 2) { this.results = []; return; }
+      this.candidateService.searchUsers(q).subscribe(r => { this.results = r; this.open = true; });
+    });
+  }
 
-.detail-sections { display: flex; flex-direction: column; gap: 16px; section { scroll-margin-top: 60px; animation: fadeUp 0.3s ease; } }
-@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-.state-panel { text-align: center; padding: 80px 0; color: var(--cohort-muted); &--error { color: var(--status-reject-text); } }
-.spinner { width: 28px; height: 28px; border: 3px solid var(--cohort-border); border-top-color: var(--cohort-primary); border-radius: 50%; margin: 0 auto 12px; animation: spin 0.8s linear infinite; }
+  onInput(): void { this.search$.next(this.query); }
+
+  select(user: SharePointUser): void {
+    this.picked.emit(user);
+    this.query = user.title;
+    this.open = false;
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+<div class="picker">
+  <input class="picker-input" [(ngModel)]="query" (input)="onInput()" [placeholder]="placeholder" (focus)="open = results.length > 0" />
+  <div class="picker-results" *ngIf="open && results.length">
+    <div class="picker-result" *ngFor="let u of results" (click)="select(u)">
+      <div class="avatar">{{ u.title.split(' ').map(n => n[0]).join('').substring(0,2).toUpperCase() }}</div>
+      <div>
+        <div class="name">{{ u.title }}</div>
+        <div class="email">{{ u.email }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+
+.picker { position: relative; }
+.picker-input {
+  width: 100%; padding: 10px 14px; border: 1px solid var(--cohort-border);
+  border-radius: 8px; font-size: 14px; transition: border-color .15s ease, box-shadow .15s ease;
+  &:focus { outline: none; border-color: var(--cohort-primary); box-shadow: 0 0 0 3px var(--status-pass-bg); }
+}
+.picker-results {
+  position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px;
+  background: white; border: 1px solid var(--cohort-border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.1); z-index: 20; max-height: 220px; overflow-y: auto;
+}
+.picker-result {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; transition: background .12s ease;
+  &:hover { background: var(--cohort-canvas); }
+  .avatar { width: 30px; height: 30px; border-radius: 8px; background: var(--cohort-primary); color: white; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .name { font-size: 13.5px; font-weight: 600; color: var(--cohort-text); }
+  .email { font-size: 11.5px; color: var(--cohort-muted); }
+}
+
+
+
+
+
+
+
+
+
+
+import { Component, EventEmitter, Input, Output } from '@angular/core';
+
+@Component({
+  selector: 'app-skip-confirm-dialog',
+  templateUrl: './skip-confirm-dialog.component.html',
+  styleUrls: ['./skip-confirm-dialog.component.scss']
+})
+export class SkipConfirmDialogComponent {
+  @Input() visible = false;
+  @Input() candidateNames: string[] = [];
+  @Output() confirmed = new EventEmitter<void>();
+  @Output() cancelled = new EventEmitter<void>();
+}
+
+
+
+
+
+
+
+
+
+<div class="dialog-backdrop" *ngIf="visible" (click)="cancelled.emit()">
+  <div class="dialog" (click)="$event.stopPropagation()">
+    <h3>Skip Tech Round 2?</h3>
+    <p>
+      {{ candidateNames.length === 1 ? candidateNames[0] : candidateNames.length + ' candidates' }}
+      only completed Tech Round 1. Do you want to skip Tech Round 2 and assign directly to Management Round?
+    </p>
+    <ul class="name-list" *ngIf="candidateNames.length > 1">
+      <li *ngFor="let n of candidateNames">{{ n }}</li>
+    </ul>
+    <div class="dialog-actions">
+      <button class="btn-secondary" (click)="cancelled.emit()">Cancel</button>
+      <button class="btn-primary" (click)="confirmed.emit()">Yes, Skip &amp; Assign</button>
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+.dialog-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex;
+  align-items: center; justify-content: center; z-index: 100; animation: fadeIn .15s ease;
+}
+.dialog {
+  background: white; border-radius: 14px; padding: 26px 28px; width: 420px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25); animation: popIn .18s ease;
+  h3 { margin: 0 0 10px; color: var(--cohort-text); font-size: 17px; }
+  p { color: var(--cohort-muted); font-size: 14px; line-height: 1.5; }
+}
+.name-list { max-height: 120px; overflow-y: auto; margin: 10px 0; padding-left: 18px; font-size: 13px; color: var(--cohort-text); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.btn-secondary { background: white; border: 1px solid var(--cohort-border); color: var(--cohort-muted); padding: 9px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all .15s ease; &:hover { border-color: var(--cohort-primary); color: var(--cohort-primary); } }
+.btn-primary { background: var(--cohort-primary); color: white; border: none; padding: 9px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: background .15s ease; &:hover { background: var(--cohort-primary-deep); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes popIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+
+
+
+
+
+
+
+
+
+
+
+import { NgModule } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { AgGridModule } from 'ag-grid-angular';
+
+import { StatusChipComponent } from './components/status-chip/status-chip.component';
+import { WorkflowPipelineCellComponent } from './components/workflow-pipeline-cell/workflow-pipeline-cell.component';
+import { PeoplePickerComponent } from './components/people-picker/people-picker.component';
+import { SkipConfirmDialogComponent } from './components/skip-confirm-dialog/skip-confirm-dialog.component';
+
+@NgModule({
+  declarations: [StatusChipComponent, WorkflowPipelineCellComponent, PeoplePickerComponent, SkipConfirmDialogComponent],
+  imports: [CommonModule, FormsModule, AgGridModule],
+  exports: [CommonModule, FormsModule, AgGridModule, StatusChipComponent, WorkflowPipelineCellComponent, PeoplePickerComponent, SkipConfirmDialogComponent]
+})
+export class SharedModule {}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { Component, OnInit } from '@angular/core';
+import { Router } from '@angular/router';
+import { ColDef, GridOptions, GridApi, GridReadyEvent } from 'ag-grid-community';
+import { CandidateService } from '../../core/services/candidate.service';
+import { WorkflowVisibilityService } from '../../core/services/workflow-visibility.service';
+import { CurrentUserService } from '../../core/services/current-user.service';
+import { Candidate } from '../../core/models/candidate.model';
+import { RoundStatus } from '../../core/models/round-status.enum';
+
+@Component({
+  selector: 'app-candidate-dashboard',
+  templateUrl: './candidate-dashboard.component.html',
+  styleUrls: ['./candidate-dashboard.component.scss']
+})
+export class CandidateDashboardComponent implements OnInit {
+
+  private allCandidates: Candidate[] = [];
+  rowData: Candidate[] = [];
+  selectedRows: Candidate[] = [];
+
+  quickFilterText = '';
+  profileFilter = 'all';
+  locationFilter = 'all';
+  profileOptions: string[] = [];
+  locationOptions: string[] = [];
+
+  loading = true;
+  errorMessage: string | null = null;
+  gridApi!: GridApi;
+
+  showSkipDialog = false;
+  pendingSkipCandidates: Candidate[] = [];
+
+  columnDefs: ColDef[] = [];
+
+  gridOptions: GridOptions = {
+    rowHeight: 72,
+    headerHeight: 46,
+    rowSelection: 'multiple',
+    suppressRowClickSelection: true,
+    animateRows: true,
+    domLayout: 'autoHeight',
+    onSelectionChanged: () => { this.selectedRows = this.gridApi?.getSelectedRows() || []; }
+  };
+
+  constructor(
+    private candidateService: CandidateService,
+    private router: Router,
+    public visibility: WorkflowVisibilityService,
+    private currentUser: CurrentUserService
+  ) {}
+
+  ngOnInit(): void {
+    this.buildColumns();
+    this.loadCandidates();
+  }
+
+  get isMultiAssignRole(): boolean {
+    return ['TechPanel', 'MgmtPanel'].includes(this.currentUser.get().role);
+  }
+
+  private buildColumns(): void {
+    const showCheckbox = this.isMultiAssignRole;
+
+    this.columnDefs = [
+      ...(showCheckbox ? [{ headerCheckboxSelection: true, checkboxSelection: true, width: 48, pinned: 'left' as const, sortable: false, filter: false }] : []),
+      {
+        headerName: 'Candidate', field: 'candidateName', flex: 2, minWidth: 220,
+        cellRenderer: (p: any) => `
+          <div class="candidate-cell">
+            <div class="avatar">${this.initials(p.data.candidateName)}</div>
+            <div class="candidate-meta">
+              <div class="name">${p.data.candidateName || 'Unnamed'}</div>
+              <div class="sub">${p.data.candidateEmailID || '—'} · ID ${p.data.candidateId || '—'}</div>
+            </div>
+          </div>`
+      },
+      { headerName: 'Role / Profile', flex: 1.2, minWidth: 170, valueGetter: (p: any) => `${p.data.roleDesignation || '—'} · ${p.data.profile || '—'}` },
+      { headerName: 'Location', field: 'location', flex: 0.8, minWidth: 110, valueFormatter: (p: any) => p.value || '—' },
+      {
+        headerName: 'Pre-Screen', flex: 1, minWidth: 140,
+        cellRenderer: (p: any) => {
+          const score = p.data.prescreeningScore; const result = p.data.prescreeningSelected;
+          if (!score && !result) return `<span class="muted-pill">Not started</span>`;
+          const cls = result === 'Selected' ? 'pass' : result === 'Rejected' ? 'reject' : 'wait';
+          return `<span class="score-pill">${score ?? '—'}/100</span><span class="chip chip--${cls}">${result || 'Pending'}</span>`;
+        }
+      },
+      {
+        headerName: 'Stage', flex: 1.3, minWidth: 170,
+        valueGetter: (p: any) => this.stageLabel(p.data)
+      },
+      {
+        headerName: '', flex: 1.1, minWidth: 130, sortable: false, filter: false,
+        cellRenderer: (p: any) => this.actionCellHtml(p.data),
+        onCellClicked: (p: any) => this.onActionClick(p.data)
+      }
+    ];
+  }
+
+  loadCandidates(): void {
+    this.loading = true;
+    this.errorMessage = null;
+    this.candidateService.getAllCandidates().subscribe({
+      next: (candidates) => { this.allCandidates = candidates; this.deriveFilterOptions(); this.applyFilters(); this.loading = false; },
+      error: () => { this.errorMessage = 'This query is too large for SharePoint to run. A column used in the filter needs to be indexed.'; this.loading = false; }
+    });
+  }
+
+  private deriveFilterOptions(): void {
+    this.profileOptions = [...new Set(this.allCandidates.map(c => c.profile).filter(Boolean))];
+    this.locationOptions = [...new Set(this.allCandidates.map(c => c.location).filter(Boolean))];
+  }
+
+  onGridReady(p: GridReadyEvent): void { this.gridApi = p.api; }
+  onSearchChange(): void { this.applyFilters(); }
+  onFilterChange(): void { this.applyFilters(); }
+  resetFilters(): void { this.quickFilterText = ''; this.profileFilter = 'all'; this.locationFilter = 'all'; this.applyFilters(); }
+
+  private applyFilters(): void {
+    // Client-side pass now; swap to CandidateService.getAllCandidates(filterString) with a
+    // built $filter clause once list sizes justify server-side filtering.
+    const q = this.quickFilterText.trim().toLowerCase();
+    this.rowData = this.allCandidates.filter(c => {
+      const matchesSearch = !q || [c.candidateName, c.candidateEmailID, c.candidatePhoneNumber, c.candidateId, c.roleDesignation, c.profile, c.location]
+        .some(f => (f || '').toLowerCase().includes(q));
+      const matchesProfile = this.profileFilter === 'all' || c.profile === this.profileFilter;
+      const matchesLocation = this.locationFilter === 'all' || c.location === this.locationFilter;
+      return matchesSearch && matchesProfile && matchesLocation;
+    });
+  }
+
+  stageLabel(c: Candidate): string {
+    if (c.hrRound.selection === RoundStatus.Selected) return 'Offer Stage';
+    if (c.onShoreRound.selection === RoundStatus.Selected) return 'HR Round';
+    if (c.mgmtRound.selection === RoundStatus.Selected) return 'On-Shore Round';
+    if (this.visibility.techStageDecision(c) === RoundStatus.Selected) return 'Management Round';
+    if (c.techRound1.selection === RoundStatus.Selected) return 'Tech Round 2';
+    if (c.prescreeningSelected === RoundStatus.Selected) return 'Tech Round 1';
+    if (this.visibility.techStageDecision(c) === RoundStatus.Rejected || c.mgmtRound.selection === RoundStatus.Rejected
+      || c.onShoreRound.selection === RoundStatus.Rejected) return 'Rejected';
+    return 'Pre-Screen';
+  }
+
+  private actionCellHtml(c: Candidate): string {
+    const action = this.visibility.getDashboardAction(c);
+    if (action === 'open') return `<button class="open-btn">Open ↗</button>`;
+    if (action === 'assignable') return `<button class="assign-btn">Assign to Me</button>`;
+    if (action === 'not-in-workflow') return `<span class="locked-pill">Not in your workflow</span>`;
+    return `<span class="locked-pill">🔒 Locked</span>`;
+  }
+
+  private onActionClick(c: Candidate): void {
+    const action = this.visibility.getDashboardAction(c);
+    if (action === 'open') this.openCandidate(c);
+    if (action === 'assignable') this.assignSingle(c);
+  }
+
+  openCandidate(c: Candidate): void {
+    this.router.navigate(['/candidates', c.listSource, c.id]);
+  }
+
+  assignSingle(c: Candidate): void {
+    this.tryAssign([c]);
+  }
+
+  assignSelected(): void {
+    if (!this.selectedRows.length) return;
+    this.tryAssign(this.selectedRows);
+  }
+
+  private tryAssign(candidates: Candidate[]): void {
+    const role = this.currentUser.get().role;
+    if (role === 'MgmtPanel') {
+      const skipNeeded = candidates.filter(c => this.visibility.techRound2NotYetDecided(c));
+      if (skipNeeded.length) {
+        this.pendingSkipCandidates = skipNeeded;
+        this.showSkipDialog = true;
+        const rest = candidates.filter(c => !skipNeeded.includes(c));
+        this.doAssign(rest, 'mgmtRound');
+        return;
+      }
+      this.doAssign(candidates, 'mgmtRound');
+      return;
+    }
+    if (role === 'TechPanel') {
+      // Assign to whichever tech round is currently open for each candidate individually
+      candidates.forEach(c => {
+        const round = !this.visibility.hasCandidateReached(c, 'techRound2') || c.techRound1.selection !== RoundStatus.Selected
+          ? 'techRound1' : 'techRound2';
+        this.doAssign([c], round as any);
+      });
+    }
+  }
+
+  confirmSkip(): void {
+    this.pendingSkipCandidates.forEach(c => { c.techRound2.selection = RoundStatus.NotApplicable; });
+    this.doAssign(this.pendingSkipCandidates, 'mgmtRound');
+    this.showSkipDialog = false;
+    this.pendingSkipCandidates = [];
+  }
+
+  cancelSkip(): void {
+    this.showSkipDialog = false;
+    this.pendingSkipCandidates = [];
+  }
+
+  private doAssign(candidates: Candidate[], round: 'techRound1' | 'techRound2' | 'mgmtRound'): void {
+    const user = this.currentUser.get();
+    const spUser = { id: user.id, title: user.title, email: user.email };
+    const prefix = this.visibility.roundFieldPrefix(round);
+    candidates.forEach(c => {
+      this.candidateService.assignUserToRound(c, prefix, spUser).subscribe(() => {
+        (c as any)[round].interviewedBy = spUser;
+        this.gridApi?.refreshCells({ force: true });
+      });
+    });
+  }
+
+  private initials(name: string): string {
+    if (!name) return '?';
+    return name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="dashboard-container">
+  <header class="dashboard-header"><h4>Recruitment Pipeline</h4><h1>Candidates</h1></header>
+
+  <div class="dashboard-toolbar" *ngIf="!loading && !errorMessage">
+    <input type="text" class="search-input" placeholder="Search name, email, phone, ID, role, profile or location..."
+      [(ngModel)]="quickFilterText" (ngModelChange)="onSearchChange()" />
+    <select class="filter-select" [(ngModel)]="profileFilter" (ngModelChange)="onFilterChange()">
+      <option value="all">All Profiles</option>
+      <option *ngFor="let p of profileOptions" [value]="p">{{ p }}</option>
+    </select>
+    <select class="filter-select" [(ngModel)]="locationFilter" (ngModelChange)="onFilterChange()">
+      <option value="all">All Locations</option>
+      <option *ngFor="let l of locationOptions" [value]="l">{{ l }}</option>
+    </select>
+    <button class="reset-btn" (click)="resetFilters()">Reset</button>
+  </div>
+
+  <div class="assign-bar" *ngIf="isMultiAssignRole && selectedRows.length">
+    <span>{{ selectedRows.length }} candidate{{ selectedRows.length > 1 ? 's' : '' }} selected</span>
+    <button (click)="assignSelected()">Assign {{ selectedRows.length }} to Me</button>
+  </div>
+
+  <div *ngIf="loading" class="state-panel"><div class="spinner"></div><p>Searching SharePoint...</p></div>
+  <div *ngIf="errorMessage" class="state-panel state-panel--error"><p class="state-title">{{ errorMessage }}</p><button (click)="loadCandidates()">Try again</button></div>
+  <div *ngIf="!loading && !errorMessage && rowData.length === 0" class="state-panel"><p class="state-title">No candidates match</p><button (click)="resetFilters()">Clear filters</button></div>
+
+  <ag-grid-angular *ngIf="!loading && !errorMessage && rowData.length > 0"
+    class="ag-theme-alpine cohort-grid" [rowData]="rowData" [columnDefs]="columnDefs"
+    [gridOptions]="gridOptions" (gridReady)="onGridReady($event)">
+  </ag-grid-angular>
+</div>
+
+<app-skip-confirm-dialog
+  [visible]="showSkipDialog"
+  [candidateNames]="pendingSkipCandidates | slice:0:pendingSkipCandidates.length"
+  (confirmed)="confirmSkip()" (cancelled)="cancelSkip()">
+</app-skip-confirm-dialog>
+
+
+
+
+
+
+
+
+
+
+
+.dashboard-container { padding: 28px 32px; background: var(--cohort-canvas); }
+.dashboard-header h4 { color: var(--cohort-primary); text-transform: uppercase; font-size: 12px; font-weight: 700; letter-spacing: 0.07em; margin: 0; }
+.dashboard-header h1 { color: var(--cohort-text); margin: 6px 0 22px; font-size: 30px; font-weight: 700; }
+
+.dashboard-toolbar { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.search-input { flex: 1; min-width: 280px; padding: 13px 16px; border: 1.5px solid var(--cohort-border); border-radius: 10px; font-size: 15px; transition: all .18s ease;
+  &:focus { outline: none; border-color: var(--cohort-primary); box-shadow: 0 0 0 4px var(--status-pass-bg); } }
+.filter-select { padding: 13px 14px; border: 1.5px solid var(--cohort-border); border-radius: 10px; font-size: 14px; background: white; cursor: pointer; transition: border-color .15s ease;
+  &:focus { outline: none; border-color: var(--cohort-primary); } }
+.reset-btn { padding: 13px 20px; border: 1.5px solid var(--cohort-border); border-radius: 10px; background: white; color: var(--cohort-muted); font-weight: 700; cursor: pointer; transition: all .15s ease;
+  &:hover { border-color: var(--cohort-primary); color: var(--cohort-primary); box-shadow: 0 2px 8px rgba(0,120,90,0.12); } }
+
+.assign-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--cohort-primary); color: white; padding: 14px 22px; border-radius: 12px; margin-bottom: 16px;
+  box-shadow: 0 6px 20px rgba(0,120,90,0.28); animation: slideDown .2s ease;
+  span { font-weight: 600; font-size: 14.5px; }
+  button { background: white; color: var(--cohort-primary); border: none; padding: 9px 20px; border-radius: 8px; font-weight: 700; cursor: pointer; transition: all .15s ease;
+    &:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,0.2); } }
+}
+@keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
+.cohort-grid { border-radius: 14px; overflow: hidden; border: 1.5px solid var(--cohort-border); box-shadow: 0 4px 18px rgba(0,0,0,0.05); }
+
+::ng-deep {
+  .candidate-cell { display: flex; align-items: center; gap: 12px; height: 100%;
+    .avatar { width: 38px; height: 38px; border-radius: 10px; background: var(--cohort-primary); color: white; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 3px 8px rgba(0,120,90,0.25); }
+    .name { font-weight: 700; color: var(--cohort-text); font-size: 14.5px; }
+    .sub { font-size: 12.5px; color: var(--cohort-muted); margin-top: 2px; } }
+
+  .muted-pill { font-size: 13px; color: var(--cohort-muted); }
+  .score-pill { display: inline-block; font-size: 13px; font-weight: 700; color: var(--cohort-text); margin-right: 8px; }
+  .chip { display: inline-flex; padding: 3px 12px; border-radius: 999px; font-size: 12px; font-weight: 700;
+    &--pass { background: var(--status-pass-bg); color: var(--status-pass-text); }
+    &--reject { background: var(--status-reject-bg); color: var(--status-reject-text); }
+    &--wait { background: var(--status-wait-bg); color: var(--status-wait-text); } }
+
+  .open-btn { background: var(--cohort-primary); color: white; border: none; border-radius: 8px; padding: 8px 16px; cursor: pointer; font-weight: 700; font-size: 13px; transition: all .15s ease;
+    &:hover { background: var(--cohort-primary-deep); transform: translateY(-1px); box-shadow: 0 5px 14px rgba(0,120,90,0.3); } }
+  .assign-btn { background: white; color: var(--cohort-primary); border: 1.5px solid var(--cohort-primary); border-radius: 8px; padding: 8px 16px; cursor: pointer; font-weight: 700; font-size: 13px; transition: all .15s ease;
+    &:hover { background: var(--cohort-primary); color: white; transform: translateY(-1px); box-shadow: 0 5px 14px rgba(0,120,90,0.3); } }
+  .locked-pill { font-size: 12.5px; color: var(--cohort-muted); font-weight: 600; }
+}
+
+.state-panel { text-align: center; padding: 70px 0; color: var(--cohort-muted);
+  &--error { color: var(--status-reject-text); }
+  button { margin-top: 14px; padding: 10px 24px; background: var(--cohort-primary); color: white; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; transition: background .15s ease; &:hover { background: var(--cohort-primary-deep); } } }
+.spinner { width: 30px; height: 30px; border: 3px solid var(--cohort-border); border-top-color: var(--cohort-primary); border-radius: 50%; margin: 0 auto 14px; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+
+
+
+
+
+
+
+
+
+
+// unchanged logic — only the template behavior changes; heroExpanded already exists.
+// Add this getter used by the template to know which fields show where:
+get headerFieldsCollapsed(): boolean { return !this.heroExpanded; }
+
+
+
+
+
+
+
+
+
+
+ <div class="candidate-hero">
+  <div class="hero-main">
+    <div class="hero-avatar">{{ candidateInitials }}</div>
+
+    <div class="hero-info">
+      <h1>{{ candidate.candidateName }}</h1>
+      <div class="hero-meta" *ngIf="headerFieldsCollapsed">
+        <span>{{ candidate.candidateEmailID || '—' }}</span>
+        <span class="dot">·</span>
+        <span>{{ candidate.candidatePhoneNumber || '—' }}</span>
+        <span class="dot">·</span>
+        <span>{{ candidate.roleDesignation }} · {{ candidate.profile }}</span>
+      </div>
+    </div>
+
+    <div class="hero-id">
+      <div class="id-label">Stage</div>
+      <div class="id-value">{{ stageLabel }}</div>
+    </div>
+
+    <button class="expand-btn" (click)="toggleHero()">
+      {{ heroExpanded ? 'View less' : 'View more' }}
+      <span class="chevron" [class.chevron--open]="heroExpanded">⌄</span>
+    </button>
+  </div>
+
+  <div class="hero-expand" [class.hero-expand--open]="heroExpanded">
+    <div class="detail-grid">
+      <div class="detail-field"><label>Candidate ID</label><span>{{ candidate.candidateId || '—' }}</span></div>
+      <div class="detail-field"><label>Email</label><span>{{ candidate.candidateEmailID || '—' }}</span></div>
+      <div class="detail-field"><label>Phone</label><span>{{ candidate.candidatePhoneNumber || '—' }}</span></div>
+      <div class="detail-field"><label>Role / Designation</label><span>{{ candidate.roleDesignation || '—' }}</span></div>
+      <div class="detail-field"><label>Profile</label><span>{{ candidate.profile || '—' }}</span></div>
+      <div class="detail-field"><label>Location</label><span>{{ candidate.location || '—' }}</span></div>
+      <div class="detail-field"><label>Allocated Biz Line</label><span>{{ candidate.allocatedBizLine || '—' }}</span></div>
+      <div class="detail-field" *ngIf="candidate.cvUpload"><label>CV</label><a [href]="candidate.cvUpload" target="_blank">View CV ↗</a></div>
+    </div>
+  </div>
+</div>
+
+<!-- jump-nav + sections stay as before -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+.panel {
+  background: white; border: 1.5px solid var(--cohort-border); border-radius: 14px;
+  padding: 26px 30px; transition: box-shadow .2s ease, transform .2s ease;
+  &:hover { box-shadow: 0 6px 22px rgba(0,0,0,0.06); }
+  h3 { margin: 0 0 20px; font-size: 17px; font-weight: 700; color: var(--cohort-primary-deep); }
+}
+.detail-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px 26px; }
+.detail-field { display: flex; flex-direction: column; gap: 5px;
+  label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--cohort-muted); font-weight: 600; }
+  span, a { font-size: 15px; color: var(--cohort-text); font-weight: 500; }
+  a { color: var(--cohort-primary); text-decoration: none; &:hover { text-decoration: underline; } } }
+
+.chip { display: inline-flex; width: fit-content; padding: 4px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 700;
+  &--pass { background: var(--status-pass-bg); color: var(--status-pass-text); }
+  &--reject { background: var(--status-reject-bg); color: var(--status-reject-text); }
+  &--wait { background: var(--status-wait-bg); color: var(--status-wait-text); } }
+
+.feedback-input {
+  width: 100%; min-height: 70px; border: 1.5px solid var(--cohort-border); border-radius: 10px;
+  padding: 12px 14px; font-family: inherit; font-size: 14.5px; resize: vertical; transition: all .18s ease;
+  &:focus { outline: none; border-color: var(--cohort-primary); box-shadow: 0 0 0 4px var(--status-pass-bg); }
+}
+
+.decision-row { display: flex; gap: 12px; margin-top: 16px; }
+.decision-btn { flex: 1; padding: 11px 0; border-radius: 10px; border: 1.5px solid var(--cohort-border); background: white; font-weight: 700; font-size: 14px; cursor: pointer; transition: all .18s ease;
+  &:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+  &--select.active { background: var(--status-pass-bg); border-color: var(--cohort-primary); color: var(--status-pass-text); box-shadow: 0 4px 14px rgba(0,120,90,0.18); }
+  &--reject.active { background: var(--status-reject-bg); border-color: var(--status-reject-text); color: var(--status-reject-text); } }
+
+.submit-btn { margin-top: 18px; padding: 11px 26px; background: var(--cohort-primary); color: white; border: none; border-radius: 10px; font-weight: 700; font-size: 14px; cursor: pointer; transition: all .18s ease;
+  &:hover:not(:disabled) { background: var(--cohort-primary-deep); transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,120,90,0.3); }
+  &:disabled { background: var(--cohort-border); color: var(--cohort-muted); cursor: not-allowed; } }
+
+.assign-cta { display: flex; align-items: center; justify-content: space-between; background: var(--status-wait-bg); border: 1.5px dashed var(--status-wait-text);
+  border-radius: 12px; padding: 16px 20px; margin-bottom: 20px; font-size: 14px; font-weight: 500;
+  button { background: var(--cohort-primary); color: white; border: none; padding: 9px 18px; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; transition: all .18s ease;
+    &:hover { background: var(--cohort-primary-deep); transform: translateY(-1px); box-shadow: 0 5px 14px rgba(0,120,90,0.3); } } }
+
+.locked-note { color: var(--cohort-muted); font-size: 14px; padding: 12px 0; font-weight: 500; }
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { Component, Input, OnChanges } from '@angular/core';
+import { Candidate } from '../../../../core/models/candidate.model';
+import { RoundStatus } from '../../../../core/models/round-status.enum';
+import { WorkflowVisibilityService, RoundAccess } from '../../../../core/services/workflow-visibility.service';
+import { CandidateService } from '../../../../core/services/candidate.service';
+import { CurrentUserService } from '../../../../core/services/current-user.service';
+
+@Component({
+  selector: 'app-tech-round-panel',
+  templateUrl: './tech-round-panel.component.html',
+  styleUrls: ['./tech-round-panel.component.scss']
+})
+export class TechRoundPanelComponent implements OnChanges {
+  @Input() candidate!: Candidate;
+
+  r1!: RoundAccess;
+  r2!: RoundAccess;
+  showR2Column = false;
+
+  r1Comments: string[] = [];
+  r1Others = '';
+  r1Decision: 'Selected' | 'Rejected' | null = null;
+
+  r2Comments: string[] = [];
+  r2Others = '';
+  r2Decision: 'Selected' | 'Rejected' | null = null;
+
+  constructor(
+    private visibility: WorkflowVisibilityService,
+    private candidateService: CandidateService,
+    private currentUser: CurrentUserService
+  ) {}
+
+  ngOnChanges(): void {
+    this.r1 = this.visibility.getAccess(this.candidate, 'techRound1');
+    this.r2 = this.visibility.getAccess(this.candidate, 'techRound2');
+    this.showR2Column = this.visibility.isTechRound2Reachable(this.candidate) || this.candidate.techRound2.interviewedBy != null;
+    this.r1Comments = this.candidate.skills.map(s => s.techRound1Comment || '');
+    this.r2Comments = this.candidate.skills.map(s => s.techRound2Comment || '');
+    this.r1Others = this.candidate.techRound1.interviewFeedback || '';
+    this.r2Others = this.candidate.techRound2.interviewFeedback || '';
+  }
+
+  assign(round: 'techRound1' | 'techRound2'): void {
+    const user = this.currentUser.get();
+    const spUser = { id: user.id, title: user.title, email: user.email };
+    const prefix = this.visibility.roundFieldPrefix(round);
+    this.candidateService.assignUserToRound(this.candidate, prefix, spUser).subscribe(() => {
+      (this.candidate as any)[round].interviewedBy = spUser;
+      this.ngOnChanges();
+    });
+  }
+
+  submit(round: 'techRound1' | 'techRound2'): void {
+    const comments = round === 'techRound1' ? this.r1Comments : this.r2Comments;
+    const others = round === 'techRound1' ? this.r1Others : this.r2Others;
+    const decision = round === 'techRound1' ? this.r1Decision : this.r2Decision;
+    if (!decision) return;
+
+    const prefix = this.visibility.roundFieldPrefix(round);
+    const fields: Record<string, any> = {
+      [`${prefix}InterviewSelection`]: decision,
+      [`${prefix}InterviewFeedback`]: others,
+      [`${prefix}InterviewDate`]: new Date().toISOString().split('T')[0]
+    };
+    const skillCommentField = round === 'techRound1' ? 'TROne' : 'TRTwo';
+    const skillKeys = ['One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten'];
+    this.candidate.skills.forEach((s, i) => {
+      fields[`Skill${skillKeys[i]}${skillCommentField}`] = comments[i];
+    });
+
+    this.candidateService.submitRoundDecision(this.candidate, fields).subscribe(() => {
+      (this.candidate as any)[round].selection = decision;
+      (this.candidate as any)[round].interviewFeedback = others;
+      this.candidate.skills.forEach((s, i) => {
+        if (round === 'techRound1') s.techRound1Comment = comments[i];
+        else s.techRound2Comment = comments[i];
+      });
+      this.ngOnChanges();
+    });
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="panel">
+  <h3>Technical Assessment</h3>
+
+  <table class="skill-table">
+    <thead>
+      <tr>
+        <th>Skill</th>
+        <th>Score</th>
+        <th>Tech Round 1 Comment</th>
+        <th *ngIf="showR2Column">Tech Round 2 Comment</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr *ngFor="let skill of candidate.skills; let i = index">
+        <td class="skill-name">{{ skill.skillName }}</td>
+        <td>{{ skill.screeningScore || '—' }}</td>
+        <td>
+          <textarea *ngIf="r1.state === 'mine-editable'" class="skill-comment" [(ngModel)]="r1Comments[i]"></textarea>
+          <span *ngIf="r1.state !== 'mine-editable'">{{ skill.techRound1Comment || '—' }}</span>
+        </td>
+        <td *ngIf="showR2Column">
+          <span *ngIf="candidate.techRound2.selection === 'N/A'" class="na-pill">N/A</span>
+          <textarea *ngIf="r2.state === 'mine-editable'" class="skill-comment" [(ngModel)]="r2Comments[i]"></textarea>
+          <span *ngIf="r2.state !== 'mine-editable' && candidate.techRound2.selection !== 'N/A'">{{ skill.techRound2Comment || '—' }}</span>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Tech Round 1 -->
+  <div class="round-block">
+    <h4>Tech Round 1</h4>
+    <div class="assign-cta" *ngIf="r1.state === 'assignable'">
+      <span>Waiting for a Tech Round 1 interviewer.</span>
+      <button (click)="assign('techRound1')">Assign to Me</button>
+    </div>
+    <p class="locked-note" *ngIf="r1.state === 'locked-other' || r1.state === 'not-reached'">{{ r1.message }}</p>
+
+    <ng-container *ngIf="r1.state === 'mine-editable'">
+      <label class="field-label">Others (overall comment)</label>
+      <textarea class="feedback-input" [(ngModel)]="r1Others" placeholder="Any other observations..."></textarea>
+      <div class="decision-row">
+        <button class="decision-btn decision-btn--select" [class.active]="r1Decision==='Selected'" (click)="r1Decision='Selected'">✓ Selected</button>
+        <button class="decision-btn decision-btn--reject" [class.active]="r1Decision==='Rejected'" (click)="r1Decision='Rejected'">✕ Rejected</button>
+      </div>
+      <button class="submit-btn" [disabled]="!r1Decision" (click)="submit('techRound1')">Submit Tech Round 1</button>
+    </ng-container>
+
+    <div class="round-footer" *ngIf="r1.state === 'mine-locked'">
+      <div class="detail-field"><label>Interviewed By</label><span>{{ candidate.techRound1.interviewedBy?.title || '—' }}</span></div>
+      <div class="detail-field"><label>Decision</label>
+        <span class="chip" [ngClass]="{'chip--pass': candidate.techRound1.selection==='Selected','chip--reject': candidate.techRound1.selection==='Rejected'}">{{ candidate.techRound1.selection }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tech Round 2 -->
+  <div class="round-block" *ngIf="showR2Column && candidate.techRound2.selection !== 'N/A'">
+    <h4>Tech Round 2</h4>
+    <div class="assign-cta" *ngIf="r2.state === 'assignable'">
+      <span>Waiting for a Tech Round 2 interviewer.</span>
+      <button (click)="assign('techRound2')">Assign to Me</button>
+    </div>
+    <p class="locked-note" *ngIf="r2.state === 'locked-other' || r2.state === 'not-reached'">{{ r2.message }}</p>
+
+    <ng-container *ngIf="r2.state === 'mine-editable'">
+      <label class="field-label">Others (overall comment)</label>
+      <textarea class="feedback-input" [(ngModel)]="r2Others" placeholder="Any other observations..."></textarea>
+      <div class="decision-row">
+        <button class="decision-btn decision-btn--select" [class.active]="r2Decision==='Selected'" (click)="r2Decision='Selected'">✓ Selected</button>
+        <button class="decision-btn decision-btn--reject" [class.active]="r2Decision==='Rejected'" (click)="r2Decision='Rejected'">✕ Rejected</button>
+      </div>
+      <button class="submit-btn" [disabled]="!r2Decision" (click)="submit('techRound2')">Submit Tech Round 2</button>
+    </ng-container>
+
+    <div class="round-footer" *ngIf="r2.state === 'mine-locked'">
+      <div class="detail-field"><label>Interviewed By</label><span>{{ candidate.techRound2.interviewedBy?.title || '—' }}</span></div>
+      <div class="detail-field"><label>Decision</label>
+        <span class="chip" [ngClass]="{'chip--pass': candidate.techRound2.selection==='Selected','chip--reject': candidate.techRound2.selection==='Rejected'}">{{ candidate.techRound2.selection }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@import '../../../../styles/panel-shared';
+h4 { font-size: 14.5px; margin: 0 0 14px; color: var(--cohort-text); font-weight: 700; }
+.field-label { font-size: 11.5px; text-transform: uppercase; color: var(--cohort-muted); font-weight: 600; display: block; margin-bottom: 6px; }
+.skill-table { width: 100%; border-collapse: collapse; margin-bottom: 26px;
+  th { text-align: left; font-size: 12px; text-transform: uppercase; color: var(--cohort-primary-deep); font-weight: 700; padding: 10px 12px; border-bottom: 2px solid var(--cohort-border); }
+  td { padding: 12px; font-size: 14px; color: var(--cohort-text); border-bottom: 1px solid var(--cohort-border); vertical-align: top; }
+  .skill-name { font-weight: 700; }
+  .na-pill { font-size: 12px; color: var(--cohort-muted); font-style: italic; }
+  .skill-comment { width: 100%; min-height: 44px; border: 1px solid var(--cohort-border); border-radius: 8px; padding: 8px 10px; font-size: 13.5px; font-family: inherit; resize: vertical;
+    &:focus { outline: none; border-color: var(--cohort-primary); } }
+  tr { transition: background .15s ease; } tr:hover td { background: var(--cohort-canvas); } }
+.round-block { padding-top: 20px; border-top: 1.5px solid var(--cohort-border); margin-top: 8px; }
+.round-footer { display: flex; flex-wrap: wrap; gap: 28px; }
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { Component, Input, OnChanges } from '@angular/core';
+import { Candidate } from '../../../../core/models/candidate.model';
+import { WorkflowVisibilityService, RoundAccess } from '../../../../core/services/workflow-visibility.service';
+import { CandidateService } from '../../../../core/services/candidate.service';
+import { CurrentUserService } from '../../../../core/services/current-user.service';
+
+@Component({
+  selector: 'app-mgmt-panel',
+  templateUrl: './mgmt-panel.component.html',
+  styleUrls: ['./mgmt-panel.component.scss']
+})
+export class MgmtPanelComponent implements OnChanges {
+  @Input() candidate!: Candidate;
+
+  access!: RoundAccess;
+  comments: string[] = [];
+  fields = { communication: '', attitude: '', culturalFit: '', leadership: '', otherTopics: '' };
+  decision: 'Selected' | 'Rejected' | null = null;
+  showSkipDialog = false;
+
+  constructor(
+    private visibility: WorkflowVisibilityService,
+    private candidateService: CandidateService,
+    private currentUser: CurrentUserService
+  ) {}
+
+  ngOnChanges(): void {
+    this.access = this.visibility.getAccess(this.candidate, 'mgmtRound');
+    this.comments = this.candidate.skills.map(s => s.mgmtRoundComment || '');
+    const m = this.candidate.mgmtRound;
+    this.fields = {
+      communication: m.communication || '', attitude: m.attitude || '',
+      culturalFit: m.culturalFit || '', leadership: m.leadership || '', otherTopics: m.otherTopics || ''
+    };
+  }
+
+  get needsSkipConfirm(): boolean {
+    return this.access.state === 'assignable' && this.visibility.techRound2NotYetDecided(this.candidate);
+  }
+
+  onAssignClick(): void {
+    if (this.needsSkipConfirm) { this.showSkipDialog = true; return; }
+    this.doAssign();
+  }
+
+  confirmSkipAndAssign(): void {
+    this.candidate.techRound2.selection = 'N/A' as any;
+    this.showSkipDialog = false;
+    this.doAssign();
+  }
+
+  cancelSkip(): void { this.showSkipDialog = false; }
+
+  private doAssign(): void {
+    const user = this.currentUser.get();
+    const spUser = { id: user.id, title: user.title, email: user.email };
+    this.candidateService.assignUserToRound(this.candidate, 'MgmtRound', spUser).subscribe(() => {
+      this.candidate.mgmtRound.interviewedBy = spUser;
+      this.ngOnChanges();
+    });
+  }
+
+  submit(): void {
+    if (!this.decision) return;
+    const skillKeys = ['One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten'];
+    const skillFields: Record<string, any> = {};
+    this.candidate.skills.forEach((s, i) => { skillFields[`Skill${skillKeys[i]}Mgmt`] = this.comments[i]; });
+
+    const fields = {
+      MgmtRoundCommunication: this.fields.communication,
+      MgmtRoundAttitude: this.fields.attitude,
+      MgmtRoundCulturalFit: this.fields.culturalFit,
+      MgmtRoundLeadership: this.fields.leadership,
+      MgmtRoundOtherTopics: this.fields.otherTopics,
+      MgmtRoundInterviewSelection: this.decision,
+      MgmtRoundInterviewDate: new Date().toISOString().split('T')[0],
+      ...skillFields
+    };
+
+    this.candidateService.submitRoundDecision(this.candidate, fields).subscribe(() => {
+      Object.assign(this.candidate.mgmtRound, this.fields, { selection: this.decision });
+      this.candidate.skills.forEach((s, i) => { s.mgmtRoundComment = this.comments[i]; });
+      this.ngOnChanges();
+    });
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="panel">
+  <h3>Management Round</h3>
+
+  <div class="assign-cta" *ngIf="access.state === 'assignable'">
+    <span>Waiting for a Management Round interviewer.</span>
+    <button (click)="onAssignClick()">Assign to Me</button>
+  </div>
+  <p class="locked-note" *ngIf="access.state === 'locked-other' || access.state === 'not-reached'">{{ access.message }}</p>
+
+  <table class="skill-table" *ngIf="access.state === 'mine-editable' || access.state === 'mine-locked'">
+    <thead><tr><th>Skill</th><th>Score</th><th>Management Round Comment</th></tr></thead>
+    <tbody>
+      <tr *ngFor="let skill of candidate.skills; let i = index">
+        <td class="skill-name">{{ skill.skillName }}</td>
+        <td>{{ skill.screeningScore || '—' }}</td>
+        <td>
+          <textarea *ngIf="access.state === 'mine-editable'" class="skill-comment" [(ngModel)]="comments[i]"></textarea>
+          <span *ngIf="access.state === 'mine-locked'">{{ skill.mgmtRoundComment || '—' }}</span>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <ng-container *ngIf="access.state === 'mine-editable'">
+    <div class="mgmt-grid">
+      <div class="mgmt-field"><label>Communication</label><textarea class="feedback-input" [(ngModel)]="fields.communication"></textarea></div>
+      <div class="mgmt-field"><label>Attitude</label><textarea class="feedback-input" [(ngModel)]="fields.attitude"></textarea></div>
+      <div class="mgmt-field"><label>Cultural Fit</label><textarea class="feedback-input" [(ngModel)]="fields.culturalFit"></textarea></div>
+      <div class="mgmt-field"><label>Leadership</label><textarea class="feedback-input" [(ngModel)]="fields.leadership"></textarea></div>
+      <div class="mgmt-field mgmt-field--wide"><label>Other Topics</label><textarea class="feedback-input" [(ngModel)]="fields.otherTopics"></textarea></div>
+    </div>
+    <div class="decision-row">
+      <button class="decision-btn decision-btn--select" [class.active]="decision==='Selected'" (click)="decision='Selected'">✓ Selected</button>
+      <button class="decision-btn decision-btn--reject" [class.active]="decision==='Rejected'" (click)="decision='Rejected'">✕ Rejected</button>
+    </div>
+    <button class="submit-btn" [disabled]="!decision" (click)="submit()">Submit Management Round</button>
+  </ng-container>
+
+  <div class="round-footer" *ngIf="access.state === 'mine-locked'">
+    <div class="detail-field"><label>Interviewed By</label><span>{{ candidate.mgmtRound.interviewedBy?.title || '—' }}</span></div>
+    <div class="detail-field"><label>Communication</label><span>{{ candidate.mgmtRound.communication || '—' }}</span></div>
+    <div class="detail-field"><label>Attitude</label><span>{{ candidate.mgmtRound.attitude || '—' }}</span></div>
+    <div class="detail-field"><label>Cultural Fit</label><span>{{ candidate.mgmtRound.culturalFit || '—' }}</span></div>
+    <div class="detail-field"><label>Leadership</label><span>{{ candidate.mgmtRound.leadership || '—' }}</span></div>
+    <div class="detail-field"><label>Other Topics</label><span>{{ candidate.mgmtRound.otherTopics || '—' }}</span></div>
+    <div class="detail-field"><label>Decision</label>
+      <span class="chip" [ngClass]="{'chip--pass': candidate.mgmtRound.selection==='Selected','chip--reject': candidate.mgmtRound.selection==='Rejected'}">{{ candidate.mgmtRound.selection }}</span>
+    </div>
+  </div>
+</div>
+
+<app-skip-confirm-dialog
+  [visible]="showSkipDialog"
+  [candidateNames]="[candidate.candidateName]"
+  (confirmed)="confirmSkipAndAssign()" (cancelled)="cancelSkip()">
+</app-skip-confirm-dialog>
+
+
+
+
+
+
+
+
+
+
+
+
+
+@import '../../../../styles/panel-shared';
+.skill-table { width: 100%; border-collapse: collapse; margin-bottom: 24px;
+  th { text-align: left; font-size: 12px; text-transform: uppercase; color: var(--cohort-primary-deep); font-weight: 700; padding: 10px 12px; border-bottom: 2px solid var(--cohort-border); }
+  td { padding: 12px; font-size: 14px; border-bottom: 1px solid var(--cohort-border); vertical-align: top; }
+  .skill-name { font-weight: 700; }
+  .skill-comment { width: 100%; min-height: 44px; border: 1px solid var(--cohort-border); border-radius: 8px; padding: 8px 10px; font-size: 13.5px; font-family: inherit; resize: vertical;
+    &:focus { outline: none; border-color: var(--cohort-primary); } } }
+.mgmt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; }
+.mgmt-field { display: flex; flex-direction: column; gap: 6px; &--wide { grid-column: 1 / -1; } label { font-size: 11.5px; text-transform: uppercase; color: var(--cohort-muted); font-weight: 600; } }
+.round-footer { display: flex; flex-wrap: wrap; gap: 26px; }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { Component, Input, OnChanges } from '@angular/core';
+import { Candidate, DEPARTMENT_OPTIONS, SharePointUser } from '../../../../core/models/candidate.model';
+import { WorkflowVisibilityService, RoundAccess } from '../../../../core/services/workflow-visibility.service';
+import { CandidateService } from '../../../../core/services/candidate.service';
+import { CurrentUserService } from '../../../../core/services/current-user.service';
+
+@Component({
+  selector: 'app-onshore-panel',
+  templateUrl: './onshore-panel.component.html',
+  styleUrls: ['./onshore-panel.component.scss']
+})
+export class OnshorePanelComponent implements OnChanges {
+  @Input() candidate!: Candidate;
+
+  access!: RoundAccess;
+  department = '';
+  decision: 'Selected' | 'Rejected' | null = null;
+  departmentOptions = DEPARTMENT_OPTIONS;
+
+  constructor(
+    private visibility: WorkflowVisibilityService,
+    private candidateService: CandidateService,
+    private currentUser: CurrentUserService
+  ) {}
+
+  ngOnChanges(): void {
+    this.access = this.visibility.getAccess(this.candidate, 'onShoreRound');
+    this.department = this.candidate.onShoreRound.department || '';
+  }
+
+  get isHrAdmin(): boolean { return this.currentUser.get().role === 'HrAdmin'; }
+  get needsAssignment(): boolean { return this.isHrAdmin && !this.candidate.onShoreRound.interviewedBy; }
+
+  onPersonPicked(user: SharePointUser): void {
+    this.candidateService.assignUserToRound(this.candidate, 'OnShoreRound', user).subscribe(() => {
+      this.candidate.onShoreRound.interviewedBy = user;
+      this.ngOnChanges();
+    });
+  }
+
+  submit(): void {
+    if (!this.decision || !this.department) return;
+    const fields = {
+      OnShoreRoundDepartment: this.department,
+      OnShoreRoundInterviewSelection: this.decision,
+      OnShoreRoundInterviewDate: new Date().toISOString().split('T')[0]
+    };
+    this.candidateService.submitRoundDecision(this.candidate, fields).subscribe(() => {
+      this.candidate.onShoreRound.department = this.department;
+      this.candidate.onShoreRound.selection = this.decision as any;
+      this.ngOnChanges();
+    });
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="panel">
+  <h3>On-Shore Round</h3>
+
+  <div class="assign-section" *ngIf="needsAssignment">
+    <label class="field-label">Assign On-Shore Recruiter</label>
+    <app-people-picker placeholder="Search for recruiter..." (picked)="onPersonPicked($event)"></app-people-picker>
+  </div>
+
+  <p class="locked-note" *ngIf="access.state === 'not-reached'">{{ access.message }}</p>
+  <p class="locked-note" *ngIf="access.state === 'no-access'">This candidate has not been assigned to you.</p>
+
+  <ng-container *ngIf="access.state === 'mine-editable'">
+    <label class="field-label">Department</label>
+    <select class="feedback-input" [(ngModel)]="department">
+      <option value="" disabled selected>Select department...</option>
+      <option *ngFor="let d of departmentOptions" [value]="d">{{ d }}</option>
+    </select>
+    <div class="decision-row">
+      <button class="decision-btn decision-btn--select" [class.active]="decision==='Selected'" (click)="decision='Selected'">✓ Selected</button>
+      <button class="decision-btn decision-btn--reject" [class.active]="decision==='Rejected'" (click)="decision='Rejected'">✕ Rejected</button>
+    </div>
+    <button class="submit-btn" [disabled]="!decision || !department" (click)="submit()">Submit On-Shore Decision</button>
+  </ng-container>
+
+  <div class="round-footer" *ngIf="access.state === 'mine-locked'">
+    <div class="detail-field"><label>Interviewed By</label><span>{{ candidate.onShoreRound.interviewedBy?.title || '—' }}</span></div>
+    <div class="detail-field"><label>Department</label><span>{{ candidate.onShoreRound.department || '—' }}</span></div>
+    <div class="detail-field"><label>Decision</label>
+      <span class="chip" [ngClass]="{'chip--pass': candidate.onShoreRound.selection==='Selected','chip--reject': candidate.onShoreRound.selection==='Rejected'}">{{ candidate.onShoreRound.selection }}</span>
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+@import '../../../../styles/panel-shared';
+.assign-section { margin-bottom: 20px; }
+.field-label { font-size: 11.5px; text-transform: uppercase; color: var(--cohort-muted); font-weight: 600; display: block; margin-bottom: 8px; }
+.round-footer { display: flex; gap: 26px; margin-top: 18px; flex-wrap: wrap; }
+select.feedback-input { min-height: unset; padding: 12px 14px; cursor: pointer; }
+
+
+
+
+
+
+
+
+
+
+
+import { Component, Input, OnChanges } from '@angular/core';
+import { Candidate, SharePointUser } from '../../../../core/models/candidate.model';
+import { WorkflowVisibilityService, RoundAccess } from '../../../../core/services/workflow-visibility.service';
+import { CandidateService } from '../../../../core/services/candidate.service';
+import { CurrentUserService } from '../../../../core/services/current-user.service';
+
+@Component({
+  selector: 'app-hr-panel',
+  templateUrl: './hr-panel.component.html',
+  styleUrls: ['./hr-panel.component.scss']
+})
+export class HrPanelComponent implements OnChanges {
+  @Input() candidate!: Candidate;
+
+  access!: RoundAccess;
+  decision: 'Selected' | 'Rejected' | null = null;
+  offerSent = false;
+  offerAccepted = false;
+
+  constructor(
+    private visibility: WorkflowVisibilityService,
+    private candidateService: CandidateService,
+    private currentUser: CurrentUserService
+  ) {}
+
+  ngOnChanges(): void {
+    this.access = this.visibility.getAccess(this.candidate, 'hrRound');
+    this.offerSent = this.candidate.hrRound.offerSent;
+    this.offerAccepted = this.candidate.hrRound.offerAccepted;
+  }
+
+  get isHrAdmin(): boolean { return this.currentUser.get().role === 'HrAdmin'; }
+  get needsAssignment(): boolean { return this.isHrAdmin && !this.candidate.hrRound.interviewedBy; }
+
+  onPersonPicked(user: SharePointUser): void {
+    this.candidateService.assignUserToRound(this.candidate, 'HrRound', user).subscribe(() => {
+      this.candidate.hrRound.interviewedBy = user;
+      this.ngOnChanges();
+    });
+  }
+
+  submit(): void {
+    if (!this.decision) return;
+    const fields = {
+      HrRoundInterviewSelection: this.decision,
+      HrRoundOfferSent: this.offerSent ? 'Yes' : 'No',
+      HrRoundOfferAccepted: this.offerAccepted ? 'Yes' : 'No',
+      HrRoundInterviewDate: new Date().toISOString().split('T')[0]
+    };
+    this.candidateService.submitRoundDecision(this.candidate, fields).subscribe(() => {
+      this.candidate.hrRound.selection = this.decision as any;
+      this.candidate.hrRound.offerSent = this.offerSent;
+      this.candidate.hrRound.offerAccepted = this.offerAccepted;
+      this.ngOnChanges();
+    });
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="panel">
+  <h3>HR Round — Final</h3>
+
+  <div class="assign-section" *ngIf="needsAssignment">
+    <label class="field-label">Assign HR Recruiter</label>
+    <app-people-picker placeholder="Search for HR recruiter..." (picked)="onPersonPicked($event)"></app-people-picker>
+  </div>
+
+  <p class="locked-note" *ngIf="access.state === 'not-reached'">{{ access.message }}</p>
+  <p class="locked-note" *ngIf="access.state === 'no-access'">This candidate has not been assigned to you.</p>
+
+  <ng-container *ngIf="access.state === 'mine-editable'">
+    <div class="offer-row">
+      <label class="toggle-field"><input type="checkbox" [(ngModel)]="offerSent" /> Offer Sent</label>
+      <label class="toggle-field"><input type="checkbox" [(ngModel)]="offerAccepted" [disabled]="!offerSent" /> Offer Accepted</label>
+    </div>
+    <div class="decision-row">
+      <button class="decision-btn decision-btn--select" [class.active]="decision==='Selected'" (click)="decision='Selected'">✓ Selected</button>
+      <button class="decision-btn decision-btn--reject" [class.active]="decision==='Rejected'" (click)="decision='Rejected'">✕ Rejected</button>
+    </div>
+    <button class="submit-btn" [disabled]="!decision" (click)="submit()">Submit &amp; Complete</button>
+  </ng-container>
+
+  <div class="round-footer" *ngIf="access.state === 'mine-locked'">
+    <div class="detail-field"><label>Interviewed By</label><span>{{ candidate.hrRound.interviewedBy?.title || '—' }}</span></div>
+    <div class="detail-field"><label>Decision</label>
+      <span class="chip" [ngClass]="{'chip--pass': candidate.hrRound.selection==='Selected','chip--reject': candidate.hrRound.selection==='Rejected'}">{{ candidate.hrRound.selection }}</span>
+    </div>
+    <div class="detail-field"><label>Offer</label>
+      <span class="chip" [ngClass]="candidate.hrRound.offerAccepted ? 'chip--pass' : 'chip--wait'">
+        {{ candidate.hrRound.offerSent ? (candidate.hrRound.offerAccepted ? 'Sent & Accepted' : 'Sent — awaiting response') : 'Not sent' }}
+      </span>
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@import '../../../../styles/panel-shared';
+.assign-section { margin-bottom: 20px; }
+.field-label { font-size: 11.5px; text-transform: uppercase; color: var(--cohort-muted); font-weight: 600; display: block; margin-bottom: 8px; }
+.offer-row { display: flex; gap: 24px; margin-bottom: 18px; }
+.toggle-field { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--cohort-text); cursor: pointer;
+  input { width: 18px; height: 18px; accent-color: var(--cohort-primary); cursor: pointer; } }
+.round-footer { display: flex; gap: 26px; margin-top: 18px; flex-wrap: wrap; }
+
+
+
+
+
+
+
+
+
+
+
+
+import { NgModule } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { RouterModule, Routes } from '@angular/router';
+import { SharedModule } from '../../shared/shared.module';
+import { CandidateDetailComponent } from './candidate-detail.component';
+import { PrescreenPanelComponent } from './components/prescreen-panel/prescreen-panel.component';
+import { TechRoundPanelComponent } from './components/tech-round-panel/tech-round-panel.component';
+import { MgmtPanelComponent } from './components/mgmt-panel/mgmt-panel.component';
+import { OnshorePanelComponent } from './components/onshore-panel/onshore-panel.component';
+import { HrPanelComponent } from './components/hr-panel/hr-panel.component';
+
+const routes: Routes = [{ path: '', component: CandidateDetailComponent }];
+
+@NgModule({
+  declarations: [CandidateDetailComponent, PrescreenPanelComponent, TechRoundPanelComponent, MgmtPanelComponent, OnshorePanelComponent, HrPanelComponent],
+  imports: [CommonModule, FormsModule, SharedModule, RouterModule.forChild(routes)]
+})
+export class CandidateDetailModule {}
+
+
+
+
+
