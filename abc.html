@@ -1,72 +1,9 @@
-<div class="dashboard-container">
-  <header class="dashboard-header"><h4>Recruitment Pipeline</h4><h1>Candidates</h1></header>
+Simple mismatch — `getAllCandidates(filter)` is being called with an argument, but the version of `CandidateService.getAllCandidates()` currently in your file doesn't accept one yet (still the old zero-argument signature from before). I gave you the updated version in the last message but it looks like it didn't get applied to this file.
 
-  <div class="stat-strip" *ngIf="!loading && !errorMessage">
-    <div class="stat-card"><div class="stat-value">{{ stats.total }}</div><div class="stat-label">Total Candidates</div></div>
-    <div class="stat-card stat-card--active"><div class="stat-value">{{ stats.active }}</div><div class="stat-label">In Progress</div></div>
-    <div class="stat-card stat-card--pass"><div class="stat-value">{{ stats.offer }}</div><div class="stat-label">Offer Stage</div></div>
-    <div class="stat-card stat-card--reject"><div class="stat-value">{{ stats.rejected }}</div><div class="stat-label">Rejected</div></div>
-  </div>
+**Fix — `core/services/candidate.service.ts`:**
 
-  <div class="dashboard-toolbar" *ngIf="!loading && !errorMessage">
-    <input type="text" class="search-input" placeholder="Search name, email, phone, ID, role, profile or location..."
-      [(ngModel)]="quickFilterText" (ngModelChange)="onSearchChange()" />
-    <select class="filter-select" [(ngModel)]="stageFilter" (ngModelChange)="onFilterChange()">
-      <option value="all">All Stages</option>
-      <option value="preScreen">Pre-Screen</option>
-      <option value="techRound1">Tech Round 1</option>
-      <option value="techRound2">Tech Round 2</option>
-      <option value="mgmtRound">Management Round</option>
-      <option value="onShoreRound">On-Shore Round</option>
-      <option value="hrRound">HR Round</option>
-      <option value="offer">Offer Stage</option>
-      <option value="rejected">Rejected</option>
-    </select>
-    <select class="filter-select" [(ngModel)]="profileFilter" (ngModelChange)="onFilterChange()">
-      <option value="all">All Profiles</option>
-      <option *ngFor="let p of profileOptions" [value]="p">{{ p }}</option>
-    </select>
-    <select class="filter-select" [(ngModel)]="locationFilter" (ngModelChange)="onFilterChange()">
-      <option value="all">All Locations</option>
-      <option *ngFor="let l of locationOptions" [value]="l">{{ l }}</option>
-    </select>
-    <button class="reset-btn" (click)="resetFilters()">Reset</button>
-  </div>
-
-  <div class="assign-bar" *ngIf="isMultiAssignRole && selectedRows.length">
-    <span>{{ selectedRows.length }} candidate{{ selectedRows.length > 1 ? 's' : '' }} selected</span>
-    <button (click)="assignSelected()">Assign {{ selectedRows.length }} to Me</button>
-  </div>
-
-  <div *ngIf="loading" class="state-panel"><div class="spinner"></div><p>Searching SharePoint...</p></div>
-  <div *ngIf="errorMessage" class="state-panel state-panel--error"><p class="state-title">{{ errorMessage }}</p><button (click)="loadCandidates()">Try again</button></div>
-  <div *ngIf="!loading && !errorMessage && rowData.length === 0" class="state-panel"><p class="state-title">No candidates match</p><button (click)="resetFilters()">Clear filters</button></div>
-
-  <ag-grid-angular *ngIf="!loading && !errorMessage && rowData.length > 0"
-    class="ag-theme-alpine cohort-grid" [rowData]="rowData" [columnDefs]="columnDefs"
-    [gridOptions]="gridOptions" (gridReady)="onGridReady($event)">
-  </ag-grid-angular>
-</div>
-
-<app-skip-confirm-dialog
-  [visible]="showSkipDialog"
-  [candidateNames]="pendingSkipNames"
-  (confirmed)="confirmSkip()" (cancelled)="cancelSkip()">
-</app-skip-confirm-dialog>
-
-
-
-
-
-
-
-
-
-
-
-
-
- getCandidates(source: 'Chennai' | 'Mumbai', filter?: string): Observable<Candidate[]> {
+```typescript
+getCandidates(source: 'Chennai' | 'Mumbai', filter?: string): Observable<Candidate[]> {
   const listName = source === 'Chennai' ? 'ChennaiInterviewList' : 'MumbaiInterviewList';
   return this.sp.getListItems<any>(listName, SELECT_FIELDS, EXPAND_FIELDS, filter).pipe(
     map(items => items.map(item => this.mapToCandidate(item, source)))
@@ -78,48 +15,20 @@ getAllCandidates(filter?: string): Observable<Candidate[]> {
     map(([c, m]) => [...c, ...m])
   );
 }
+```
 
+Open `candidate.service.ts`, find your current `getCandidates`/`getAllCandidates` methods, and replace them with the two above — they need to accept and pass through the optional `filter` parameter down to `SharePointService.getListItems()`, which already supports it.
 
+Also double check `SharePointService.getListItems()` still has the `filter?: string` parameter in its signature (from the original write I gave you) — if that got reverted too, add it back:
 
-
-
-
-
-
-
-selectedUser: SharePointUser | null = null;
-
-onPersonPicked(user: SharePointUser): void { this.selectedUser = user; }
-
-confirmAssign(): void {
-  if (!this.selectedUser) return;
-  this.candidateService.assignUserToRound(this.candidate, 'OnshoreRound', this.selectedUser).subscribe({
-    next: () => { this.candidate.onShoreRound.interviewedBy = this.selectedUser; this.selectedUser = null; this.ngOnChanges(); },
-    error: (err) => { console.error(err); alert('Assign failed — check console.'); }
-  });
+```typescript
+getListItems<T>(listName: string, selectFields: string[], expandFields: string[] = [], filter?: string): Observable<T[]> {
+  let url = `${this.siteUrl}/_api/web/lists/getbytitle('${listName}')/items?$select=${selectFields.join(',')}`;
+  if (expandFields.length) url += `&$expand=${expandFields.join(',')}`;
+  if (filter) url += `&$filter=${filter}`;
+  const headers = new HttpHeaders({ 'Accept': 'application/json;odata=verbose' });
+  return this.http.get<SpListResponse<T>>(url, { headers }).pipe(map(res => res.d.results));
 }
+```
 
-
-
-
-
-
-
-
-
-
-<div class="assign-section" *ngIf="needsAssignment">
-  <label class="field-label">Assign On-Shore Recruiter</label>
-  <app-people-picker placeholder="Search for recruiter..." (picked)="onPersonPicked($event)"></app-people-picker>
-  <button class="submit-btn" style="margin-top:10px" [disabled]="!selectedUser" (click)="confirmAssign()">
-    Assign {{ selectedUser?.title || '' }}
-  </button>
-</div>
-
-
-
-
-
-
-
-
+Save both, rebuild — the "Expected 0 arguments, but got 1" error should clear and the filters should start hitting SharePoint's `$filter` query.
