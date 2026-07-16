@@ -1,78 +1,131 @@
-<div class="panel">
-  <h3>HR Round — Final</h3>
+import { Component, OnInit } from '@angular/core';
+import { ActivatedRoute, Router } from '@angular/router';
+import { CandidateService } from '../../core/services/candidate.service';
+import { WorkflowVisibilityService } from '../../core/services/workflow-visibility.service';
+import { Candidate } from '../../core/models/candidate.model';
+import { RoundStatus } from '../../core/models/round-status.enum';
 
-  <div class="assign-section" *ngIf="needsAssignment">
-    <label class="field-label">Assign HR Recruiter</label>
-    <app-people-picker placeholder="Search for HR recruiter..." (picked)="onPersonPicked($event)"></app-people-picker>
-  </div>
-
-  <p class="locked-note" *ngIf="access.state === 'not-reached'">{{ access.message }}</p>
-  <p class="locked-note" *ngIf="access.state === 'no-access'">This candidate has not been assigned to you.</p>
-
-  <ng-container *ngIf="access.state === 'mine-editable'">
-    <div class="offer-row">
-      <label class="toggle-field"><input type="checkbox" [(ngModel)]="offerSent" /> Offer Sent</label>
-      <label class="toggle-field"><input type="checkbox" [(ngModel)]="offerAccepted" [disabled]="!offerSent" /> Offer Accepted</label>
-    </div>
-    <div class="decision-row">
-      <button class="decision-btn decision-btn--select" [class.active]="decision==='Selected'" (click)="decision='Selected'">✓ Selected</button>
-      <button class="decision-btn decision-btn--reject" [class.active]="decision==='Rejected'" (click)="decision='Rejected'">✕ Rejected</button>
-    </div>
-    <button class="submit-btn" [disabled]="!decision" (click)="submit()">Submit &amp; Complete</button>
-  </ng-container>
-
-  <div class="round-footer" *ngIf="access.state === 'mine-locked'">
-    <div class="detail-field"><label>Interviewed By</label><span>{{ candidate.hrRound.interviewedBy?.title || '—' }}</span></div>
-    <div class="detail-field"><label>Decision</label>
-      <span class="chip" [ngClass]="{'chip--pass': candidate.hrRound.selection==='Selected','chip--reject': candidate.hrRound.selection==='Rejected'}">{{ candidate.hrRound.selection }}</span>
-    </div>
-    <div class="detail-field"><label>Offer</label>
-      <span class="chip" [ngClass]="candidate.hrRound.offerAccepted ? 'chip--pass' : 'chip--wait'">
-        {{ candidate.hrRound.offerSent ? (candidate.hrRound.offerAccepted ? 'Sent & Accepted' : 'Sent — awaiting response') : 'Not sent' }}
-      </span>
-    </div>
-  </div>
-</div>
-
-
-
-
-
-
-
-
-
-
-
-@import '../../../../styles/panel-shared';
-.assign-section { margin-bottom: 20px; }
-.field-label { font-size: 11.5px; text-transform: uppercase; color: var(--cohort-muted); font-weight: 600; display: block; margin-bottom: 8px; }
-.offer-row { display: flex; gap: 24px; margin-bottom: 18px; }
-.toggle-field { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--cohort-text); cursor: pointer;
-  input { width: 18px; height: 18px; accent-color: var(--cohort-primary); cursor: pointer; } }
-.round-footer { display: flex; gap: 26px; margin-top: 18px; flex-wrap: wrap; }
-
-
-
-
-
-
-import { NgModule } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { RouterModule, Routes } from '@angular/router';
-import { SharedModule } from '../../shared/shared.module';
-import { CandidateDetailComponent } from './candidate-detail.component';
-import { PrescreenPanelComponent } from './components/prescreen-panel/prescreen-panel.component';
-import { TechRoundPanelComponent } from './components/tech-round-panel/tech-round-panel.component';
-import { MgmtPanelComponent } from './components/mgmt-panel/mgmt-panel.component';
-import { OnshorePanelComponent } from './components/onshore-panel/onshore-panel.component';
-import { HrPanelComponent } from './components/hr-panel/hr-panel.component';
-
-const routes: Routes = [{ path: '', component: CandidateDetailComponent }];
-
-@NgModule({
-  declarations: [CandidateDetailComponent, PrescreenPanelComponent, TechRoundPanelComponent, MgmtPanelComponent, OnshorePanelComponent, HrPanelComponent],
-  imports: [CommonModule, FormsModule, SharedModule, RouterModule.forChild(routes)]
+@Component({
+  selector: 'app-candidate-detail',
+  templateUrl: './candidate-detail.component.html',
+  styleUrls: ['./candidate-detail.component.scss']
 })
-export class CandidateDetailModule {}
+export class CandidateDetailComponent implements OnInit {
+
+  candidate: Candidate | null = null;
+  loading = true;
+  errorMessage: string | null = null;
+  heroExpanded = false;
+
+  constructor(
+    private route: ActivatedRoute,
+    private router: Router,
+    private candidateService: CandidateService,
+    public visibility: WorkflowVisibilityService
+  ) {}
+
+  ngOnInit(): void {
+    const source = this.route.snapshot.paramMap.get('source') as 'Chennai' | 'Mumbai';
+    const id = Number(this.route.snapshot.paramMap.get('id'));
+    this.loadCandidate(source, id);
+  }
+
+  private loadCandidate(source: 'Chennai' | 'Mumbai', id: number): void {
+    this.loading = true;
+    this.errorMessage = null;
+
+    this.candidateService.getAllCandidates().subscribe({
+      next: (candidates) => {
+        const found = candidates.find(c => c.listSource === source && c.id === id);
+        if (!found) {
+          this.errorMessage = 'Candidate not found.';
+          this.loading = false;
+          return;
+        }
+        if (!this.visibility.canOpenCandidate(found)) {
+          this.errorMessage = 'This candidate is not assigned to you.';
+          this.loading = false;
+          return;
+        }
+        this.candidate = found;
+        this.loading = false;
+      },
+      error: () => {
+        this.errorMessage = 'Could not load candidate details from SharePoint.';
+        this.loading = false;
+      }
+    });
+  }
+
+  toggleHero(): void {
+    this.heroExpanded = !this.heroExpanded;
+  }
+
+  goBack(): void {
+    this.router.navigate(['/dashboard']);
+  }
+
+  scrollTo(sectionId: string): void {
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  get candidateInitials(): string {
+    if (!this.candidate?.candidateName) return '';
+    return this.candidate.candidateName
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .substring(0, 2)
+      .toUpperCase();
+  }
+
+  /** True when the header should show email/phone/role inline (collapsed state). */
+  get headerFieldsCollapsed(): boolean {
+    return !this.heroExpanded;
+  }
+
+  get stageLabel(): string {
+    if (!this.candidate) return '';
+    const c = this.candidate;
+
+    if (c.hrRound.selection === RoundStatus.Selected) return 'Offer Stage';
+    if (c.onShoreRound.selection === RoundStatus.Selected) return 'HR Round';
+    if (c.mgmtRound.selection === RoundStatus.Selected) return 'On-Shore Round';
+    if (this.visibility.techStageDecision(c) === RoundStatus.Selected) return 'Management Round';
+    if (c.techRound1.selection === RoundStatus.Selected) return 'Tech Round 2';
+    if (c.prescreeningSelected === RoundStatus.Selected) return 'Tech Round 1';
+
+    if (this.visibility.techStageDecision(c) === RoundStatus.Rejected
+      || c.mgmtRound.selection === RoundStatus.Rejected
+      || c.onShoreRound.selection === RoundStatus.Rejected) {
+      return 'Rejected';
+    }
+    return 'Pre-Screen';
+  }
+
+  // ---------- Section visibility gates, driven by WorkflowVisibilityService ----------
+
+  get showPreScreen(): boolean {
+    return !!this.candidate;
+  }
+
+  get showTechTable(): boolean {
+    if (!this.candidate) return false;
+    return this.candidate.prescreeningSelected === RoundStatus.Selected;
+  }
+
+  get showMgmt(): boolean {
+    if (!this.candidate) return false;
+    return this.visibility.isMgmtReachable(this.candidate);
+  }
+
+  get showOnShore(): boolean {
+    if (!this.candidate) return false;
+    return this.visibility.isOnShoreReachable(this.candidate);
+  }
+
+  get showHr(): boolean {
+    if (!this.candidate) return false;
+    return this.visibility.isHrReachable(this.candidate);
+  }
+}
