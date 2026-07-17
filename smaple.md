@@ -1,3 +1,8 @@
+Here's the full picture based on what's built so far.
+
+## Project structure
+
+```
 Cohort-Hiring/
 └── src/app/
     ├── core/
@@ -28,3 +33,4 @@ Cohort-Hiring/
     │   └── people-picker/
     ├── app-routing.module.ts, app.component.*, app.config.ts
     └── (root) index.html, main.ts, styles.scss
+```
