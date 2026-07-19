@@ -1,38 +1,62 @@
-Good catch — that's a real gap. Right now `isMine` is computed purely by comparing your user ID against the assignee, with **no check that your current roles still entitle you to act on that round**. So if your roles changed (or you hold multiple roles and the round in question isn't one your active roles can own), the code still treats you as "mine" and shows Continue/Unassign.
+Three separate bugs here, all fixable quickly. Let's go one by one — I found the actual causes.
 
-**Fix in `workflow.service.ts`** — there are two places that compute this the same unsafe way: `getAccess()` and `getDashboardAction()`. Both need a role check added alongside the ID match.
+**Bug 1 & 2 (business unit not saving + old assignment shown) — same root cause.** In `confirmHrAssign()`, the code only ever calls `assignInterviewer()`, which writes `InterviewedById` — it never writes the business unit field at all, even though the modal captures it in `assignCtx.businessUnit`. That's why it silently reverts to "Not set." The "old assignment still there" symptom is the same bug's side effect: since nothing else refreshes the local candidate object after reassigning, the UI keeps showing stale data until you reload.
 
-Add this helper near your other private helpers:
+**Bug 3 (should only navigate in if assigning to self)** — `confirmHrAssign()` unconditionally calls `navigateToCandidate()` after every assign, regardless of who it was assigned to.
+
+**Fix — replace `confirmHrAssign()` in `dashboard.component.ts` entirely:**
 
 ```ts
-/** Does the current user hold a role that's actually entitled to own this round? */
-private ownsRoundByRole(key: RoundKey): boolean {
-  const selfAssignRoles = ROUNDS[key].selfAssign;
-  // Rounds with no selfAssign roles (Onshore, HR) are HR-only ownership
-  return selfAssignRoles.length
-    ? selfAssignRoles.some(r => this.currentUser.hasRole(r))
-    : this.isHRUser();
+confirmHrAssign(): void {
+  if (!this.assignCtx?.picked) return;
+  const { candidate, round } = this.assignCtx;
+  const user = this.assignCtx.picked;
+  const businessUnit = this.assignCtx.businessUnit;
+
+  const targetPrefix = this.assignTargetRound === 'hrRound'
+    ? ROUNDS['hrRound'].prefix
+    : ROUNDS['onshoreRound'].prefix;
+
+  const fields: Record<string, any> = {
+    [`${targetPrefix}InterviewedById`]: user.id,
+  };
+  if (this.assignTargetRound === 'onshoreRound' && businessUnit) {
+    fields['OnshoreRoundDepartment'] = businessUnit;   // ONSHORE_BU_COL — confirm exact internal name matches cohort.config.ts
+  }
+
+  this.candidates.updateItem(LOCATION_LIST[candidate.location], candidate.id, fields).pipe(
+    switchMap(() => this.assignTargetRound === 'hrRound'
+      ? this.candidates.skipOnshoreRound(candidate)
+      : of(void 0))
+  ).subscribe({
+    next: () => {
+      this.assignCtx = null;
+      const me = this.currentUser.get();
+      if (user.id === me.id) {
+        this.navigateToCandidate(candidate);   // only enter it if you assigned yourself
+      } else {
+        this.reload();                          // otherwise just refresh the list
+      }
+    },
+    error: err => { this.error = this.humanError(err); this.assignCtx = null; },
+  });
 }
 ```
 
-**In `getAccess()`**, find:
+(Add `switchMap`, `of` to your rxjs imports if not already there — `switchMap` is already imported elsewhere in your services.)
+
+**Bug 4 — Recruiter has full edit rights, should be HrAdmin-only.** In `workflow.service.ts`, `getAccess()`, find:
 ```ts
-const mine = !!assignedTo && assignedTo.id === me.id;
+if (this.currentUser.isAdmin() || this.currentUser.hasRole('Recruiter')) {
+  return { state: 'editable', canEdit: true, assignedToName: assignedTo?.title };
+}
 ```
 Replace with:
 ```ts
-const mine = !!assignedTo && assignedTo.id === me.id && this.ownsRoundByRole(key);
+if (this.currentUser.isAdmin()) {
+  return { state: 'editable', canEdit: true, assignedToName: assignedTo?.title };
+}
 ```
+Now a Recruiter only gets `editable` when they're the actual assignee (`mine`) — exactly what you described: they can edit rounds they assigned to themselves, not everything.
 
-**In `getDashboardAction()`**, find:
-```ts
-base.isMine = !!assignedTo && assignedTo.id === me.id;
-```
-Replace with:
-```ts
-base.isMine = !!assignedTo && assignedTo.id === me.id && this.ownsRoundByRole(active);
-```
-
-That's it — `canUnassign` and the template's Continue/Unassign visibility both derive from `isMine`, so once `isMine` correctly becomes `false` for a round your current roles don't cover, the dashboard.component.html changes from before automatically fall back to just the Open button for that row, since `!action(c).isMine` renders Open instead of Continue.
-
-One thing worth double-checking with whoever manages roles: HR Admin/Recruiter already bypass all of this via `canHrAssign`/`canEditByRole`, so this fix only affects Tech/Management/Onshore panel members — which is exactly the case you're describing.
+Make these two edits, save, recompile, hard refresh — test the onshore assign-with-business-unit flow first since that's your immediate blocker.
