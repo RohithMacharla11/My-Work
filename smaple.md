@@ -1,50 +1,44 @@
-Good catch — found the exact spots. Two of these panels build the separator as unconditional literal text, so it shows up even when the thing after it is empty.
+Found it — the people-picker is **hardcoded** to always search two fixed groups (`'On Shore Interview Panel'`, `'HR Cohort Team'`), regardless of which round you opened it from. It doesn't even look at what round/panel you're assigning to — that's why the same people always show up no matter where you're picking from.
 
-**Fix 1 — `mgmt-round-panel.component.html`.** Find:
-```html
-<small *ngIf="candidate.mgmtRound.interviewedBy">
-  {{ candidate.mgmtRound.interviewedBy.title }} · {{ formatDate(candidate.mgmtRound.interviewDate) }}
-</small>
-```
-Replace with:
-```html
-<small *ngIf="candidate.mgmtRound.interviewedBy">
-  {{ candidate.mgmtRound.interviewedBy.title }}
-  <ng-container *ngIf="candidate.mgmtRound.interviewDate"> · {{ formatDate(candidate.mgmtRound.interviewDate) }}</ng-container>
-</small>
-```
-(This was showing "Name ·" with a trailing dot and nothing after it when a manager was assigned but hadn't submitted feedback with a date yet.)
+**The logic you want, mapped to groups:**
 
-**Fix 2 — `onshore-round-panel.component.html`.** Find:
+| Round | Who should appear |
+|---|---|
+| Tech Round 1 | Tech Panel only |
+| Tech Round 2 | Tech Panel **+** Management Panel |
+| Management Round | Management Panel only |
+| Onshore Round | Onshore Panel **+** HR |
+| HR Round | HR only |
 
-```html
-<span class="interviewer">{{ access.assignedToName || '-' }}</span>
-<span class="date-time" *ngIf="candidate.onshoreRound.interviewDate">
-  - {{ formatDate(candidate.onshoreRound.interviewDate) }}
-</span>
-```
-Replace with (matching the pattern your HR round panel already uses correctly):
-```html
-<span class="interviewer" *ngIf="access.assignedToName">{{ access.assignedToName }}</span>
-<span class="dim" *ngIf="!access.assignedToName">Unassigned</span>
-<span class="separator" *ngIf="access.assignedToName && candidate.onshoreRound.interviewDate"></span>
-<span class="date-time" *ngIf="candidate.onshoreRound.interviewDate">
-  {{ formatDate(candidate.onshoreRound.interviewDate) }}
-</span>
+**Fix 1 — `cohort.config.ts`, change `assignGroup` from a single string to an array per round:**
+```ts
+export const ROUNDS: Record<RoundKey, { prefix: string; name: string; selfAssign: UserRole[]; assignGroup: string[] }> = {
+  techRound1:  { prefix: 'TechRound1', name: 'Tech Round 1',      selfAssign: ['TechPanel'],            assignGroup: ['Tech Interview Panel'] },
+  techRound2:  { prefix: 'TechRound2', name: 'Tech Round 2',      selfAssign: ['TechPanel','MgmtPanel'], assignGroup: ['Tech Interview Panel', 'Mgmt Interview Panel'] },
+  mgmtRound:   { prefix: 'MgmtRound',  name: 'Management Round',  selfAssign: ['MgmtPanel'],            assignGroup: ['Mgmt Interview Panel'] },
+  onshoreRound:{ prefix: 'OnShoreRound', name: 'Onshore Round',   selfAssign: [],                       assignGroup: ['On Shore Interview Panel', 'HR Cohort Team'] },
+  hrRound:     { prefix: 'HrRound',    name: 'HR Round',          selfAssign: [],                       assignGroup: ['HR Cohort Team'] },
+};
 ```
 
-**Fix 3 — `candidate-detail.component.html`, hero header.** Find the role/profile line:
-```html
-<span>{{ candidate.roleDesignation }} · {{ candidate.profile }}</span>
+**Fix 2 — `people-picker.component.ts`,** make the group list an `@Input` instead of hardcoded:
+```ts
+@Input() groups: string[] = [];
+```
+Then in `onInput()`, replace:
+```ts
+const groups = ['On Shore Interview Panel', 'HR Cohort Team'];
+```
+with:
+```ts
+const groups = this.groups;
 ```
 
-Replace with:
+**Fix 3 — `dashboard.component.html`,** pass the round's groups into the picker:
 ```html
-<span>{{ candidate.roleDesignation }}</span>
-<span class="separator" *ngIf="candidate.roleDesignation && candidate.profile"> · </span>
-<span *ngIf="candidate.profile">{{ candidate.profile }}</span>
+<app-people-picker [groups]="ROUNDS[assignCtx.round].assignGroup" (picked)="onPicked($event)"></app-people-picker>
 ```
 
-Tech Round panel is already fine — it doesn't have this problem, no change needed there.
+**Fix 4 —** wherever `groupName` (singular string) is currently used for the modal's "Only members of `<b>{{ groupName }}</b>` should be chosen" hint text, join the array instead: `{{ ROUNDS[assignCtx.round].assignGroup.join(' or ') }}`.
 
-Save, recompile, refresh. That covers Management, Onshore, and the hero header — the three spots where a stray dot/dash could show with nothing on one side of it.
+One thing to confirm with whoever manages your SharePoint groups: I used `'Mgmt Interview Panel'` for Management — check that's the exact group title (case/spacing matters for the API call), since I only saw `'Tech Interview Panel'`, `'On Shore Interview Panel'`, and `'HR Cohort Team'` referenced directly in your code so far.
