@@ -1,19 +1,8 @@
-assignToMe(): void {
-  const me = this.currentUser.get();
-  const user: SharePointUser = { id: me.id, title: me.title, email: me.email };
-  const mgmtPrefix = ROUNDS.mgmtRound.prefix;
-
-  const fields: Record<string, any> = {
-    [`${mgmtPrefix}InterviewedById`]: me.id,
-  };
-  const skippingT2 = this.candidate.techRound2.selection === RoundStatus.Pending;
-  if (skippingT2) {
-    fields[`${ROUNDS.techRound2.prefix}InterviewSelection`] = RoundStatus.NotApplicable;
-  }
-
-  this.candidates.submitRound(this.candidate, fields).subscribe(() => {
-    this.candidate.mgmtRound.interviewedBy = user;
-    if (skippingT2) this.candidate.techRound2.selection = RoundStatus.NotApplicable;
-    this.candidates.patchStatus(this.candidate).subscribe(() => this.ngOnChanges());
-  });
+const fields: Record<string, any> = {
+  [`${targetPrefix}InterviewedById`]: user.id,
+};
+if (this.assignTargetRound === 'onshoreRound') {
+  if (businessUnit) fields['OnshoreRoundDepartment'] = businessUnit;
+  // Un-skip: bring the onshore round back to Pending so the workflow routes there
+  fields['OnShoreRoundInterviewSelection'] = 'Pending';
 }
