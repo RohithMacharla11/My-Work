@@ -1,62 +1,35 @@
-Three separate bugs here, all fixable quickly. Let's go one by one — I found the actual causes.
+Got it — one bug causing both symptoms. `needsBusinessUnit` is calculated **once**, when you first click the assign button, based on whichever round you clicked from — but it never updates when you flip the radio button between "Onshore round" / "HR round" inside the modal. So:
 
-**Bug 1 & 2 (business unit not saving + old assignment shown) — same root cause.** In `confirmHrAssign()`, the code only ever calls `assignInterviewer()`, which writes `InterviewedById` — it never writes the business unit field at all, even though the modal captures it in `assignCtx.businessUnit`. That's why it silently reverts to "Not set." The "old assignment still there" symptom is the same bug's side effect: since nothing else refreshes the local candidate object after reassigning, the UI keeps showing stale data until you reload.
+- Click assign from the **HR round row** → `needsBusinessUnit` is set `false` permanently → even if that candidate still needs the Onshore selection, the field never appears.
+- Click assign from the **Onshore row** to reassign → `needsBusinessUnit` was `true` at open time, but if you're reassigning an already-HR-skipped candidate, the stored value doesn't line up with what the radio is actually pointing to, so it can show/hide wrong depending on the path taken.
 
-**Bug 3 (should only navigate in if assigning to self)** — `confirmHrAssign()` unconditionally calls `navigateToCandidate()` after every assign, regardless of who it was assigned to.
+The real fix is to stop storing `needsBusinessUnit` as a snapshot and instead derive it live from whichever radio option (`assignTargetRound`) is currently selected.
 
-**Fix — replace `confirmHrAssign()` in `dashboard.component.ts` entirely:**
-
-```ts
-confirmHrAssign(): void {
-  if (!this.assignCtx?.picked) return;
-  const { candidate, round } = this.assignCtx;
-  const user = this.assignCtx.picked;
-  const businessUnit = this.assignCtx.businessUnit;
-
-  const targetPrefix = this.assignTargetRound === 'hrRound'
-    ? ROUNDS['hrRound'].prefix
-    : ROUNDS['onshoreRound'].prefix;
-
-  const fields: Record<string, any> = {
-    [`${targetPrefix}InterviewedById`]: user.id,
-  };
-  if (this.assignTargetRound === 'onshoreRound' && businessUnit) {
-    fields['OnshoreRoundDepartment'] = businessUnit;   // ONSHORE_BU_COL — confirm exact internal name matches cohort.config.ts
-  }
-
-  this.candidates.updateItem(LOCATION_LIST[candidate.location], candidate.id, fields).pipe(
-    switchMap(() => this.assignTargetRound === 'hrRound'
-      ? this.candidates.skipOnshoreRound(candidate)
-      : of(void 0))
-  ).subscribe({
-    next: () => {
-      this.assignCtx = null;
-      const me = this.currentUser.get();
-      if (user.id === me.id) {
-        this.navigateToCandidate(candidate);   // only enter it if you assigned yourself
-      } else {
-        this.reload();                          // otherwise just refresh the list
-      }
-    },
-    error: err => { this.error = this.humanError(err); this.assignCtx = null; },
-  });
-}
+**Fix 1 — `dashboard.component.html`,** replace the business-unit field's condition:
+```html
+<div class="field" *ngIf="assignCtx.needsBusinessUnit">
+```
+with:
+```html
+<div class="field" *ngIf="assignTargetRound === 'onshoreRound'">
 ```
 
-(Add `switchMap`, `of` to your rxjs imports if not already there — `switchMap` is already imported elsewhere in your services.)
-
-**Bug 4 — Recruiter has full edit rights, should be HrAdmin-only.** In `workflow.service.ts`, `getAccess()`, find:
+**Fix 2 — same file, `canConfirmHrAssign` check.** In `dashboard.component.ts`, find:
 ```ts
-if (this.currentUser.isAdmin() || this.currentUser.hasRole('Recruiter')) {
-  return { state: 'editable', canEdit: true, assignedToName: assignedTo?.title };
+get canConfirmHrAssign(): boolean {
+  const a = this.assignCtx;
+  return !!a && !!a.picked && (!a.needsBusinessUnit || !!a.businessUnit);
 }
 ```
 Replace with:
 ```ts
-if (this.currentUser.isAdmin()) {
-  return { state: 'editable', canEdit: true, assignedToName: assignedTo?.title };
+get canConfirmHrAssign(): boolean {
+  const a = this.assignCtx;
+  if (!a || !a.picked) return false;
+  return this.assignTargetRound !== 'onshoreRound' || !!a.businessUnit;
 }
 ```
-Now a Recruiter only gets `editable` when they're the actual assignee (`mine`) — exactly what you described: they can edit rounds they assigned to themselves, not everything.
 
-Make these two edits, save, recompile, hard refresh — test the onshore assign-with-business-unit flow first since that's your immediate blocker.
+**Fix 3 — `startHrAssign()`,** you can leave `needsBusinessUnit` in the interface for now (harmless), but it's no longer the source of truth — the template and validation both now read live off `assignTargetRound`, which already updates correctly via `[(ngModel)]` when the radio changes.
+
+That's it — save, recompile, refresh. Now the business-unit field shows/hides in real time as you toggle the Onshore/HR radio, regardless of which row you opened the modal from.
