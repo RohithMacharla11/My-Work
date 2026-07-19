@@ -1,55 +1,50 @@
-Two changes needed — point all three location keys at the same list, and filter by the `Location` column instead of by list name.
+Good catch — found the exact spots. Two of these panels build the separator as unconditional literal text, so it shows up even when the thing after it is empty.
 
-**1. `cohort.config.ts` — make all three keys resolve to the same list:**
-```ts
-export const LOCATION_LIST: Record<LocationKey, string> = {
-  Mumbai: LISTS.mumbai,
-  Chennai: LISTS.mumbai,
-  Bangalore: LISTS.mumbai,
-};
+**Fix 1 — `mgmt-round-panel.component.html`.** Find:
+```html
+<small *ngIf="candidate.mgmtRound.interviewedBy">
+  {{ candidate.mgmtRound.interviewedBy.title }} · {{ formatDate(candidate.mgmtRound.interviewDate) }}
+</small>
+```
+Replace with:
+```html
+<small *ngIf="candidate.mgmtRound.interviewedBy">
+  {{ candidate.mgmtRound.interviewedBy.title }}
+  <ng-container *ngIf="candidate.mgmtRound.interviewDate"> · {{ formatDate(candidate.mgmtRound.interviewDate) }}</ng-container>
+</small>
+```
+(This was showing "Name ·" with a trailing dot and nothing after it when a manager was assigned but hadn't submitted feedback with a date yet.)
+
+**Fix 2 — `onshore-round-panel.component.html`.** Find:
+
+```html
+<span class="interviewer">{{ access.assignedToName || '-' }}</span>
+<span class="date-time" *ngIf="candidate.onshoreRound.interviewDate">
+  - {{ formatDate(candidate.onshoreRound.interviewDate) }}
+</span>
+```
+Replace with (matching the pattern your HR round panel already uses correctly):
+```html
+<span class="interviewer" *ngIf="access.assignedToName">{{ access.assignedToName }}</span>
+<span class="dim" *ngIf="!access.assignedToName">Unassigned</span>
+<span class="separator" *ngIf="access.assignedToName && candidate.onshoreRound.interviewDate"></span>
+<span class="date-time" *ngIf="candidate.onshoreRound.interviewDate">
+  {{ formatDate(candidate.onshoreRound.interviewDate) }}
+</span>
 ```
 
-**2. `candidate.service.ts` — add a location filter clause to every query.** Update `queryFor` to accept and apply it:
-```ts
-private queryFor(prescreen: 'Selected' | 'Rejected', filters: DashboardFilters, location: LocationKey): ListQuery {
-  const baseFilter = buildDashboardFilter(prescreen, filters);
-  const locClause = `Location eq '${location.replace(/'/g, "''")}'`;
-  const combined = baseFilter ? `(${baseFilter}) and ${locClause}` : locClause;
-  return {
-    select: SELECT_FIELDS,
-    expand: EXPAND_FIELDS,
-    filter: combined,
-    orderby: 'Modified desc',
-    top: SERVER_PAGE_SIZE,
-  };
-}
+**Fix 3 — `candidate-detail.component.html`, hero header.** Find the role/profile line:
+```html
+<span>{{ candidate.roleDesignation }} · {{ candidate.profile }}</span>
 ```
 
-Update the two callers to pass `location` through:
-```ts
-getActivePage(location: LocationKey, filters: DashboardFilters): Observable<Page<Candidate>> {
-  return this.sp
-    .getPage<any>(LOCATION_LIST[location], this.queryFor('Selected', filters, location))
-    .pipe(map(page => this.mapPage(page, location)));
-}
-
-getRejectedPage(location: LocationKey, filters: DashboardFilters): Observable<Page<Candidate>> {
-  return this.sp
-    .getPage<any>(LOCATION_LIST[location], this.queryFor('Rejected', filters, location))
-    .pipe(map(page => this.mapPage(page, location)));
-}
+Replace with:
+```html
+<span>{{ candidate.roleDesignation }}</span>
+<span class="separator" *ngIf="candidate.roleDesignation && candidate.profile"> · </span>
+<span *ngIf="candidate.profile">{{ candidate.profile }}</span>
 ```
 
-**3. Still in `candidate.service.ts` — `mapCandidate()` should read the actual `Location` value from the item, not just echo back whichever tab you queried from** (matters once you filter/search across tabs or view a single record):
+Tech Round panel is already fine — it doesn't have this problem, no change needed there.
 
-```ts
-private mapCandidate(item: any, location: LocationKey): Candidate {
-  return {
-    id: item.Id,
-    location: (item.Location as LocationKey) ?? location,
-    // ...rest unchanged
-```
-
-`getById()` needs no change — `Id` is already unique across the whole list, and it now resolves to the same list regardless of which location tab you came from.
-
-Save, recompile, refresh — Mumbai/Chennai/Bangalore tabs now all query `MumbaiInterview`, each filtered server-side by its own `Location` value, and the correct location displays on each candidate row instead of whatever tab you happened to click.
+Save, recompile, refresh. That covers Management, Onshore, and the hero header — the three spots where a stray dot/dash could show with nothing on one side of it.
