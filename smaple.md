@@ -1,44 +1,34 @@
-Found it — the people-picker is **hardcoded** to always search two fixed groups (`'On Shore Interview Panel'`, `'HR Cohort Team'`), regardless of which round you opened it from. It doesn't even look at what round/panel you're assigning to — that's why the same people always show up no matter where you're picking from.
+That actually points to a specific browser behavior: `sessionStorage` is supposed to clear when a tab closes, but Chrome/Edge deliberately **restore** sessionStorage when you reopen via "reopen closed tab" (Ctrl+Shift+T) or when the browser restores a session after a crash/restart — that's likely what you're hitting, not a bug in the literal sense, but it's giving you stale data you don't want.
 
-**The logic you want, mapped to groups:**
+The cleanest fix isn't to fight sessionStorage's edge-case restore behavior — it's to stop trusting the *stored cohort* as authoritative and always re-validate it against what's actually available right now.
 
-| Round | Who should appear |
-|---|---|
-| Tech Round 1 | Tech Panel only |
-| Tech Round 2 | Tech Panel **+** Management Panel |
-| Management Round | Management Panel only |
-| Onshore Round | Onshore Panel **+** HR |
-| HR Round | HR only |
-
-**Fix 1 — `cohort.config.ts`, change `assignGroup` from a single string to an array per round:**
+**In `dashboard.component.ts`, `loadInitialData()`,** find:
 ```ts
-export const ROUNDS: Record<RoundKey, { prefix: string; name: string; selfAssign: UserRole[]; assignGroup: string[] }> = {
-  techRound1:  { prefix: 'TechRound1', name: 'Tech Round 1',      selfAssign: ['TechPanel'],            assignGroup: ['Tech Interview Panel'] },
-  techRound2:  { prefix: 'TechRound2', name: 'Tech Round 2',      selfAssign: ['TechPanel','MgmtPanel'], assignGroup: ['Tech Interview Panel', 'Mgmt Interview Panel'] },
-  mgmtRound:   { prefix: 'MgmtRound',  name: 'Management Round',  selfAssign: ['MgmtPanel'],            assignGroup: ['Mgmt Interview Panel'] },
-  onshoreRound:{ prefix: 'OnShoreRound', name: 'Onshore Round',   selfAssign: [],                       assignGroup: ['On Shore Interview Panel', 'HR Cohort Team'] },
-  hrRound:     { prefix: 'HrRound',    name: 'HR Round',          selfAssign: [],                       assignGroup: ['HR Cohort Team'] },
-};
+if (coharts.length > 0) {
+  if (!this.selectedCohort) {
+    // No cohort was persisted → pick the newest one as a fallback
+    this.selectedCohort = cohorts[0].title;
+  }
+  this.filters = { ...this.filters, cohort: this.selectedCohort ?? undefined };
+  this.dashboardState.setCohort(this.selectedCohort ?? undefined);
+}
 ```
 
-**Fix 2 — `people-picker.component.ts`,** make the group list an `@Input` instead of hardcoded:
+Replace with:
 ```ts
-@Input() groups: string[] = [];
-```
-Then in `onInput()`, replace:
-```ts
-const groups = ['On Shore Interview Panel', 'HR Cohort Team'];
-```
-with:
-```ts
-const groups = this.groups;
-```
-
-**Fix 3 — `dashboard.component.html`,** pass the round's groups into the picker:
-```html
-<app-people-picker [groups]="ROUNDS[assignCtx.round].assignGroup" (picked)="onPicked($event)"></app-people-picker>
+if (cohorts.length > 0) {
+  // Validate any restored cohort still exists in the live list — a
+  // stale sessionStorage restore (e.g. Chrome's "reopen closed tab")
+  // should never show a cohort that's no longer real.
+  const stillValid = this.selectedCohort && cohorts.some(c => c.title === this.selectedCohort);
+  if (!stillValid) {
+    this.selectedCohort = cohorts[0].title;
+  }
+  this.filters = { ...this.filters, cohort: this.selectedCohort ?? undefined };
+  this.dashboardState.setCohort(this.selectedCohort ?? undefined);
+}
 ```
 
-**Fix 4 —** wherever `groupName` (singular string) is currently used for the modal's "Only members of `<b>{{ groupName }}</b>` should be chosen" hint text, join the array instead: `{{ ROUNDS[assignCtx.round].assignGroup.join(' or ') }}`.
+This directly solves "whatever's shown in the dropdown should be shown in the particular list" — even if sessionStorage hands back an old cohort title, it now only survives if that cohort still genuinely appears in the freshly-fetched `cohorts` list; otherwise it silently falls back to the newest real one, exactly like a first-time load.
 
-One thing to confirm with whoever manages your SharePoint groups: I used `'Mgmt Interview Panel'` for Management — check that's the exact group title (case/spacing matters for the API call), since I only saw `'Tech Interview Panel'`, `'On Shore Interview Panel'`, and `'HR Cohort Team'` referenced directly in your code so far.
+If you'd rather go further and stop *any* persistence across tab closes entirely (not just cohort), tell me — that's a bigger change (removing `saveToSession`/`loadFromSession` calls from `DashboardStateService` altogether) and would also drop your saved filters/tab/location on every reopen, which might not be what you want for a normal same-session refresh.
