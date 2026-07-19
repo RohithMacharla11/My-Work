@@ -1,51 +1,55 @@
-Two more instances of the same root bug — `assignTargetRound` defaults to `'onshoreRound'` for *every* non-HR round (including Management), and the warning banner / business-unit field only check `assignTargetRound`, not whether this is even an Onshore/HR assignment in the first place.
+Two changes needed — point all three location keys at the same list, and filter by the `Location` column instead of by list name.
 
-**Fix 1 — `startHrAssign()` in `dashboard.component.ts`,** only set a meaningful target when it's actually relevant:
+**1. `cohort.config.ts` — make all three keys resolve to the same list:**
 ```ts
-startHrAssign(c: Candidate, round: RoundKey): void {
-  this.assignCtx = {
-    candidate: c, round,
-    groupName: ROUNDS[round].assignGroup,
-    needsBusinessUnit: false,
-    picked: null,
-    businessUnit: null,
+export const LOCATION_LIST: Record<LocationKey, string> = {
+  Mumbai: LISTS.mumbai,
+  Chennai: LISTS.mumbai,
+  Bangalore: LISTS.mumbai,
+};
+```
+
+**2. `candidate.service.ts` — add a location filter clause to every query.** Update `queryFor` to accept and apply it:
+```ts
+private queryFor(prescreen: 'Selected' | 'Rejected', filters: DashboardFilters, location: LocationKey): ListQuery {
+  const baseFilter = buildDashboardFilter(prescreen, filters);
+  const locClause = `Location eq '${location.replace(/'/g, "''")}'`;
+  const combined = baseFilter ? `(${baseFilter}) and ${locClause}` : locClause;
+  return {
+    select: SELECT_FIELDS,
+    expand: EXPAND_FIELDS,
+    filter: combined,
+    orderby: 'Modified desc',
+    top: SERVER_PAGE_SIZE,
   };
-  this.assignTargetRound = round === 'hrRound' ? 'hrRound'
-    : round === 'onshoreRound' ? 'onshoreRound'
-    : 'hrRound';   // dummy value for Tech/Mgmt — never read since the ng-container hides these fields for them
 }
 ```
 
-**Fix 2 — `dashboard.component.html`, business-unit field.** Find:
-```html
-<div class="field" *ngIf="assignTargetRound === 'onshoreRound'">
-```
-Replace with:
-```html
-<div class="field" *ngIf="(assignCtx.round === 'onshoreRound' || assignCtx.round === 'hrRound') && assignTargetRound === 'onshoreRound'">
-```
-
-**Fix 3 — same file, the warning banner.** Find:
-```html
-<div *ngIf="assignTargetRound === 'hrRound'" class="warn-banner">
-  <b>Notice:</b> Assigning an HR recruiter will automatically skip the On-shore round.
-</div>
-```
-Replace with:
-```html
-<div *ngIf="(assignCtx.round === 'onshoreRound' || assignCtx.round === 'hrRound') && assignTargetRound === 'hrRound' && !onshoreDecided(assignCtx.candidate)" class="warn-banner">
-  <b>Notice:</b> Assigning an HR recruiter will automatically skip the On-shore round.
-</div>
-```
-
-Also fix `canConfirmHrAssign()` the same way, since it still checks bare `assignTargetRound`:
+Update the two callers to pass `location` through:
 ```ts
-get canConfirmHrAssign(): boolean {
-  const a = this.assignCtx;
-  if (!a || !a.picked) return false;
-  const isOnshoreOrHr = a.round === 'onshoreRound' || a.round === 'hrRound';
-  return !isOnshoreOrHr || this.assignTargetRound !== 'onshoreRound' || !!a.businessUnit;
+getActivePage(location: LocationKey, filters: DashboardFilters): Observable<Page<Candidate>> {
+  return this.sp
+    .getPage<any>(LOCATION_LIST[location], this.queryFor('Selected', filters, location))
+    .pipe(map(page => this.mapPage(page, location)));
+}
+
+getRejectedPage(location: LocationKey, filters: DashboardFilters): Observable<Page<Candidate>> {
+  return this.sp
+    .getPage<any>(LOCATION_LIST[location], this.queryFor('Rejected', filters, location))
+    .pipe(map(page => this.mapPage(page, location)));
 }
 ```
 
-Save, recompile, refresh. Now: HR round assign shows no radio, no warning, no business unit. Management/Tech assign shows no radio, no warning, no business unit. Only Onshore/HR (undecided) shows the radio + conditional warning/business-unit.
+**3. Still in `candidate.service.ts` — `mapCandidate()` should read the actual `Location` value from the item, not just echo back whichever tab you queried from** (matters once you filter/search across tabs or view a single record):
+
+```ts
+private mapCandidate(item: any, location: LocationKey): Candidate {
+  return {
+    id: item.Id,
+    location: (item.Location as LocationKey) ?? location,
+    // ...rest unchanged
+```
+
+`getById()` needs no change — `Id` is already unique across the whole list, and it now resolves to the same list regardless of which location tab you came from.
+
+Save, recompile, refresh — Mumbai/Chennai/Bangalore tabs now all query `MumbaiInterview`, each filtered server-side by its own `Location` value, and the correct location displays on each candidate row instead of whatever tab you happened to click.
