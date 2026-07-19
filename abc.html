@@ -1,8 +1,25 @@
-const fields: Record<string, any> = {
-  [`${targetPrefix}InterviewedById`]: user.id,
-};
-if (this.assignTargetRound === 'onshoreRound') {
-  if (businessUnit) fields['OnshoreRoundDepartment'] = businessUnit;
-  // Un-skip: bring the onshore round back to Pending so the workflow routes there
-  fields['OnShoreRoundInterviewSelection'] = 'Pending';
+// ----------------------------------------------------------------
+// Management round special handling (needs to touch Tech Round 2)
+// ----------------------------------------------------------------
+if (round === 'mgmtRound') {
+  const tech2WasSkipped = candidate.techRound2.selection === 'N/A';
+
+  this.candidates.unassignInterviewer(candidate, ROUNDS[round].prefix).subscribe({
+    next: () => {
+      if (tech2WasSkipped) {
+        // Reopen Tech Round 2 so Tech Panel can pick it up again
+        this.candidates
+          .unassignInterviewer(candidate, ROUNDS.techRound2.prefix, true) // resetStatus:true → 'Pending'
+          .subscribe({
+            next: () => { this.confirmCtx = null; this.reload(); },
+            error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+          });
+      } else {
+        this.confirmCtx = null;
+        this.reload();
+      }
+    },
+    error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+  });
+  return; // Management-round handling finished
 }
