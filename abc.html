@@ -1,34 +1,61 @@
-Simple mismatch — `getAllCandidates(filter)` is being called with an argument, but the version of `CandidateService.getAllCandidates()` currently in your file doesn't accept one yet (still the old zero-argument signature from before). I gave you the updated version in the last message but it looks like it didn't get applied to this file.
+<div class="action-icons">
 
-**Fix — `core/services/candidate.service.ts`:**
+  <!-- ---------- Open (view-only) / Continue (yours) ---------- -->
+  <!-- Not yours → Open, always visible, works even when locked to someone else -->
+  <button *ngIf="!action(c).isMine"
+          class="icon-btn has-tooltip"
+          title="Open candidate details"
+          (click)="open(c)">
+    <i class="icon bi bi-box-arrow-up-right"></i>
+  </button>
 
-```typescript
-getCandidates(source: 'Chennai' | 'Mumbai', filter?: string): Observable<Candidate[]> {
-  const listName = source === 'Chennai' ? 'ChennaiInterviewList' : 'MumbaiInterviewList';
-  return this.sp.getListItems<any>(listName, SELECT_FIELDS, EXPAND_FIELDS, filter).pipe(
-    map(items => items.map(item => this.mapToCandidate(item, source)))
-  );
-}
+  <!-- Assigned to "me" → Continue -->
+  <button *ngIf="action(c).isMine"
+          class="icon-btn has-tooltip"
+          title="Continue — you are the assigned interviewer"
+          (click)="open(c)">
+    <i class="icon bi bi-arrow-right-circle-fill"></i>
+  </button>
 
-getAllCandidates(filter?: string): Observable<Candidate[]> {
-  return forkJoin([this.getCandidates('Chennai', filter), this.getCandidates('Mumbai', filter)]).pipe(
-    map(([c, m]) => [...c, ...m])
-  );
-}
-```
+  <!-- ---------- HR Assign / Re-assign / Un-assign ---------- -->
+  <ng-container *ngIf="action(c).canHrAssign">
+    <button *ngIf="action(c).assignedToName && !action(c).isMine"
+            class="icon-btn has-tooltip"
+            title="Re-assign this round to another HR user"
+            (click)="startHrAssign(c, action(c).activeRound!)">
+      <i class="icon bi bi-people-fill"></i>
+    </button>
+    <button *ngIf="!action(c).assignedToName"
+            class="icon-btn has-tooltip"
+            title="Assign an HR interviewer to this round"
+            (click)="startHrAssign(c, action(c).activeRound!)">
+      <i class="icon bi bi-person-add"></i>
+    </button>
+    <button *ngIf="action(c).isMine"
+            class="icon-btn has-tooltip"
+            title="Release the HR assignment (make the round free again)"
+            (click)="startUnassign(c)">
+      <i class="icon bi bi-person-dash"></i>
+    </button>
+  </ng-container>
 
-Open `candidate.service.ts`, find your current `getCandidates`/`getAllCandidates` methods, and replace them with the two above — they need to accept and pass through the optional `filter` parameter down to `SharePointService.getListItems()`, which already supports it.
+  <!-- ---------- Non-HR Panel Member Assign / Un-assign ---------- -->
+  <!-- FIX: was action(c).canHrAssign, should be the inverse -->
+  <ng-container *ngIf="!action(c).canHrAssign">
+    <button *ngIf="action(c).canSelfAssign"
+            class="icon-btn has-tooltip"
+            title="Assign yourself to this round"
+            (click)="startSelfAssign(c, action(c).activeRound!)">
+      <i class="icon bi bi-person-add"></i>
+    </button>
+    <button *ngIf="action(c).isMine"
+            class="icon-btn has-tooltip"
+            title="Release your assignment (make the round free again)"
+            (click)="startUnassign(c)">
+      <i class="icon bi bi-person-dash"></i>
+    </button>
+  </ng-container>
 
-Also double check `SharePointService.getListItems()` still has the `filter?: string` parameter in its signature (from the original write I gave you) — if that got reverted too, add it back:
+  <!-- Lock icon removed entirely — Open button now covers this case -->
 
-```typescript
-getListItems<T>(listName: string, selectFields: string[], expandFields: string[] = [], filter?: string): Observable<T[]> {
-  let url = `${this.siteUrl}/_api/web/lists/getbytitle('${listName}')/items?$select=${selectFields.join(',')}`;
-  if (expandFields.length) url += `&$expand=${expandFields.join(',')}`;
-  if (filter) url += `&$filter=${filter}`;
-  const headers = new HttpHeaders({ 'Accept': 'application/json;odata=verbose' });
-  return this.http.get<SpListResponse<T>>(url, { headers }).pipe(map(res => res.d.results));
-}
-```
-
-Save both, rebuild — the "Expected 0 arguments, but got 1" error should clear and the filters should start hitting SharePoint's `$filter` query.
+</div>
