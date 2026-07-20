@@ -1,78 +1,158 @@
-Two separate changes — one CSS/HTML tweak for alignment, one config addition for the new skill columns.
+Now I have everything I need. Here's the complete, exact diff.
 
-## 1. Skill name + max marks on one line, right-aligned
+## 1. `workflow.service.ts` — add `canEditDecision`
 
-Right now `(Max {{ s.maxMarks }})` sits right after the label text, so it drifts left/right depending on label length. To pin it to the right edge of the column consistently, wrap both in a flex row inside the cell.
-
-**`tech-round-panel.component.html`** — find the skill cell:
-```html
-<td class="col-skill">
-  <b>{{ s.label }}</b><span *ngIf="s.maxMarks"> (Max {{ s.maxMarks }})</span>
-</td>
+**Interface:**
+```ts
+export interface RoundAccess {
+  state: AccessState;
+  canEdit: boolean;
+  canEditDecision: boolean;   // NEW — only the actual assigned interviewer can change Selected/Rejected
+  assignedToName?: string;
+}
 ```
 
-Change to:
+**`getAccess()` — every return statement gets the new field, `canEditDecision` is simply `mine`:**
+
+```ts
+getAccess(c: Candidate, key: RoundKey): RoundAccess {
+  const me = this.currentUser.get();
+
+  if (!this.canView(c, key)) return { state: 'no-access', canEdit: false, canEditDecision: false };
+  if (key === 'techRound2' && this.isTechRound2Skipped(c))
+    return { state: 'skipped', canEdit: false, canEditDecision: false };
+  if (key === 'onshoreRound' && this.isOnshoreSkipped(c))
+    return { state: 'skipped', canEdit: false, canEditDecision: false };
+
+  if (!this.hasReached(c, key)) return { state: 'not-reached', canEdit: false, canEditDecision: false };
+
+  const locked = this.isRoundLocked(c, key);
+  const active = key === 'mgmtRound'
+    ? this.hasReached(c, 'mgmtRound') && this.status(c, 'mgmtRound') === S.Pending
+    : this.activeRound(c) === key;
+  const assignedTo = this.assignee(c, key);
+  const mine = !!assignedTo && assignedTo.id === me.id;
+  const canEditByRole = this.currentUser.canEditAnything();
+  const inPanel = this.editableRounds().includes(key);
+
+  if (active && !locked) {
+    if (!assignedTo && (canEditByRole || this.ownsRoundByRole(key))) {
+      return { state: 'assignable', canEdit: false, canEditDecision: false };
+    }
+    if (mine || canEditByRole) {
+      return { state: 'editable', canEdit: true, canEditDecision: mine, assignedToName: assignedTo?.title };
+    }
+  }
+
+  if (this.currentUser.isAdmin()) {
+    return { state: 'editable', canEdit: true, canEditDecision: mine, assignedToName: assignedTo?.title };
+  }
+
+  return { state: 'readonly', canEdit: false, canEditDecision: false, assignedToName: assignedTo?.title };
+}
+```
+
+That's the entire service change. Logic: `canEditDecision` is `true` only when the viewer **is** the assigned interviewer (`mine`) — HR Admin editing someone else's round gets `canEdit: true, canEditDecision: false`. If HR Admin happens to also be the assigned interviewer, `mine` is true and they keep full control, same as any other interviewer.
+
+## 2. Each panel template — same 3-part pattern
+
+Replace the existing `*ngIf="access.canEdit"` (or `r1.canEdit`/`r2.canEdit`) decision block with three variants: **editable buttons** (canEditDecision), **highlighted read-only** (canEdit but not canEditDecision), **plain chip** (fully readonly — you already have this one).
+
+**`hr-round-panel.component.html`** — replace the `Decision` field block:
 ```html
-<td class="col-skill">
-  <div class="skill-row-flex">
-    <b>{{ s.label }}</b>
-    <span class="max-marks" *ngIf="s.maxMarks">Max {{ s.maxMarks }}</span>
+<div class="field">
+  <label>Decision <span class="req" *ngIf="access.canEditDecision">*</span></label>
+
+  <div class="selector" *ngIf="access.canEditDecision">
+    <button class="selopt y" [class.on]="decision === Sel" (click)="decision = Sel">✓ Selected</button>
+    <button class="selopt n" [class.on]="decision === Rej" (click)="decision = Rej">X Rejected</button>
   </div>
+
+  <div class="selector locked-decision" *ngIf="access.canEdit && !access.canEditDecision">
+    <button class="selopt y" [class.on]="candidate.hrRound.selection === Sel" disabled>✓ Selected</button>
+    <button class="selopt n" [class.on]="candidate.hrRound.selection === Rej" disabled>X Rejected</button>
+  </div>
+</div>
+```
+
+(Leave the existing bottom `*ngIf="!access.canEdit && (...)"` chip block untouched — that already covers fully-readonly viewers.)
+
+**`mgmt-round-panel.component.html`** — replace the decision `<td>`:
+```html
+<td class="col-round">
+  <div class="selector" *ngIf="access.canEditDecision">
+    <button class="selopt y" [class.on]="decision === Sel" (click)="decision = Sel">✓ Selected</button>
+    <button class="selopt n" [class.on]="decision === Rej" (click)="decision = Rej">X Rejected</button>
+  </div>
+  <div class="selector locked-decision" *ngIf="access.canEdit && !access.canEditDecision">
+    <button class="selopt y" [class.on]="candidate.mgmtRound.selection === Sel" disabled>✓ Selected</button>
+    <button class="selopt n" [class.on]="candidate.mgmtRound.selection === Rej" disabled>X Rejected</button>
+  </div>
+  <ng-container *ngIf="!access.canEdit">
+    <span class="chip pass" *ngIf="candidate.mgmtRound.selection === Sel"><i></i>Selected</span>
+    <span class="chip rej" *ngIf="candidate.mgmtRound.selection === Rej"><i></i>Rejected</span>
+    <span class="dim" *ngIf="candidate.mgmtRound.selection !== Sel && candidate.mgmtRound.selection !== Rej">Pending</span>
+  </ng-container>
 </td>
 ```
 
-**`round-panel.shared.scss`** (or `tech-round-panel.component.scss` if you want it scoped only to this table) — add:
+**`onshore-round-panel.component.html`** — replace the `Result` field:
+```html
+<div class="field">
+  <label>Result <span class="req" *ngIf="access.canEditDecision">*</span></label>
 
+  <div class="selector" *ngIf="access.canEditDecision">
+    <button class="selopt y" [class.on]="decision === Sel" (click)="decision = Sel">✓ Selected</button>
+    <button class="selopt n" [class.on]="decision === Rej" (click)="decision = Rej">X Rejected</button>
+  </div>
+
+  <div class="selector locked-decision" *ngIf="access.canEdit && !access.canEditDecision">
+    <button class="selopt y" [class.on]="candidate.onshoreRound.selection === Sel" disabled>✓ Selected</button>
+    <button class="selopt n" [class.on]="candidate.onshoreRound.selection === Rej" disabled>X Rejected</button>
+  </div>
+</div>
+```
+(Leave that panel's `*ngIf="!access.canEdit && (...Sel||...Rej)"` chip block as-is.)
+
+**`tech-round-panel.component.html`** — this one has two decisions (R1/R2), same pattern twice. R1 block:
+```html
+<td class="col-round">
+  <div class="selector" *ngIf="r1.canEditDecision">
+    <button class="selopt neutral-y" [class.on]="r1Decision === Sel" (click)="r1Decision = Sel">✓ Recommended</button>
+    <button class="selopt neutral-n" [class.on]="r1Decision === Rej" (click)="r1Decision = Rej">X Not Recommended</button>
+  </div>
+  <div class="selector locked-decision" *ngIf="r1.canEdit && !r1.canEditDecision">
+    <button class="selopt neutral-y" [class.on]="decisionOf('techRound1') === Sel" disabled>✓ Recommended</button>
+    <button class="selopt neutral-n" [class.on]="decisionOf('techRound1') === Rej" disabled>X Not Recommended</button>
+  </div>
+  <ng-container *ngIf="!r1.canEdit">
+    <span class="chip neutral" *ngIf="decisionOf('techRound1') === Sel"><i></i>Recommended</span>
+    <span class="chip neutral" *ngIf="decisionOf('techRound1') === Rej"><i></i>Not Recommended</span>
+    <span class="dim" *ngIf="decisionOf('techRound1') !== Sel && decisionOf('techRound1') !== Rej">Pending</span>
+  </ng-container>
+</td>
+```
+
+R2 block — identical pattern, swap `r1`→`r2`, `r1Decision`→`r2Decision`, `'techRound1'`→`'techRound2'`.
+
+## 3. CSS — highlighted-but-locked look
+
+Add to `round-panel.shared.scss`:
 ```scss
-.skill-row-flex {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 10px;
-  white-space: nowrap;
+.locked-decision .selopt {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
-
-.max-marks {
-  color: var(--muted, #8a8a8a);
-  font-size: 0.85em;
-  font-weight: 500;
-  flex-shrink: 0;
+.locked-decision .selopt.on {
+  opacity: 1;
+  box-shadow: 0 0 0 2px currentColor inset;  // visually highlight the current decision without allowing change
 }
 ```
 
-Since `.col-skill` is a fixed-width table column, every row's `max-marks` span now lands flush against the same right edge — straight vertical line down the column, label always on one line to the left of it.
+## What you don't need to touch
 
-## 2. Add 4 new management round skills
+- **Feedback textareas / comment fields** in every panel already gate on `access.canEdit` — unchanged, HR Admin can still edit them.
+- **Submit buttons** already gate on `access.canEdit` — unchanged, HR Admin can still submit (their feedback edits, decision stays whatever it already was in `candidate.xRound.selection` since the disabled buttons never touch `decision`/`r1Decision`/`r2Decision` — but wait: **check this** — each panel's `submit()` sends `decision` (the component's editable field) as the field value. If HR Admin can't edit `decision` via UI, `decision` needs to be pre-seeded from the existing selection so submit doesn't silently overwrite it. Confirm each panel's `ngOnChanges()` already sets e.g. `this.decision = this.candidate.hrRound.selection === Pending ? null : this.candidate.hrRound.selection` — from what I can see in `hr-round-panel.component.ts` it does exactly that (`this.decision = ... === Pending ? null : this.candidate.hrRound.selection`). Since HR Admin can't click the buttons, `decision` stays at that pre-seeded value and submit sends the same decision back unchanged — correct behavior, no data loss.
+- **"Submitted by" name** — already rendered via `{{ access.assignedToName }}` in each panel's header-meta block, inside the `editable || readonly` container, so it shows regardless of who's viewing.
 
-These are internal SharePoint column names on the `ManagementRound` fields (`SkillOneMR`…`SkillFiveMR` pattern), so they go straight into the config array. Everything downstream — `SELECT_FIELDS`, the mgmt panel's row-building, the submit payload — already loops over this array by index, so adding entries here is the only code change needed.
-
-**`cohort.config.ts`:**
-```ts
-export const MGMT_SKILL_COLS = [
-  'SkillOneMR',
-  'SkillTwoMR',
-  'SkillThreeMR',
-  'SkillFourMR',
-  'SkillFiveMR',
-  'Justification',
-  'Constrains',
-  'PotentialOpportunities',
-  'PointsOfAttention',
-];
-```
-
-**One thing you need to do on the SharePoint side, not code:** `MgmtRoundPanelComponent.ngOnChanges()` builds its rows like this —
-
-```ts
-this.lookups.managementSkills().subscribe(labels => {
-  const n = Math.min(labels.length, MGMT_SKILL_COLS.length);
-  this.rows = Array.from({ length: n }, (_, i) => ({
-    label: labels[i],
-    comment: this.candidate.managementComments[i] ?? '',
-  }));
-});
-```
-
-`labels` comes from the `ManagementSkills` SharePoint list (titles), zipped **by index** with `MGMT_SKILL_COLS`. So the row count is `Math.min(labels.length, MGMT_SKILL_COLS.length)` — meaning you need **4 new items added to the `ManagementSkills` list** (titled `Justification`, `Constrains`, `Potential opportunities`, `Points of attention` — whatever display label you want) in the same order as the columns above, or the zip will misalign (e.g. row 6 could show the wrong label against `Justification`'s column).
-
-Also double check the internal column names on the `ManagementRound`-related SharePoint fields — `Constrains` (missing the second "t") looks like it might be a typo either from the list design or just how you typed it here. If the actual SharePoint internal name is `Constraints`, use that exact spelling in the config array — internal names must match exactly or the field write/read will silently no-op on that column.
+One thing to verify on your end after applying: for **HrAdmin** with `mgmtRound`/`onshoreRound`/`hrRound` where `decision` starts `null` (round genuinely still Pending, no `mine` and no prior HR edit) — the Submit button's `[disabled]="!decision || saving"` will correctly stay disabled since HR Admin never gets to set `decision` via the locked buttons in that case, which is the right outcome (nothing to submit yet).
