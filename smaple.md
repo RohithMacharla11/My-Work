@@ -1,24 +1,6 @@
-Good — here's the full implementation plan. I'm giving you exact code changes per file. Since I've only seen these files as photos (not live repo access), verify line numbers/exact surrounding code before pasting — but the logic below is complete and self-consistent.
+Here's the complete, consistent set of changes across every file this touches — including the fix your voice note surfaced (the HR/onshore unassign cascade currently has a real bug).
 
-## 1. SharePoint — statuses to configure
-
-Add a **Choice column** named `Status` to `MumbaiInterview`, `ChennaiInterview`, `BangloreInterview` with exactly these 7 values (must match your `WorkflowStatus` enum strings verbatim):
-
-```
-Rejected
-Pending with Tech Round 1
-Pending with Tech Round 2 or Management Round
-Pending with Management Round
-Pending with Onshore Round or HR Round
-Pending with Onshore
-Pending with HR
-```
-
-Nothing else changes in SharePoint — you already have this column and `computeStatus()`/`patchStatus()` writing to it.
-
-## 2. `odata-filter.service.ts`
-
-Remove `prescreen` param entirely — Status supersedes it — and add the status-clause builder with reverse-psychology include/exclude:
+## 1. `odata-filter.service.ts`
 
 ```typescript
 import { UserRole, WorkflowStatus, ROLE_STATUS_MAP, POWER_ROLES } from '../config/cohort.config';
@@ -26,13 +8,11 @@ import { UserRole, WorkflowStatus, ROLE_STATUS_MAP, POWER_ROLES } from '../confi
 const ALL_ACTIVE_STATUSES: WorkflowStatus[] =
   Object.values(WorkflowStatus).filter(s => s !== WorkflowStatus.Rejected);
 
-/** Builds the Status clause for a tab, given the user's roles. Returns null = no filter needed. */
 export function buildStatusFilter(roles: UserRole[], tab: 'active' | 'rejected'): string {
   if (tab === 'rejected') {
     return `Status eq '${WorkflowStatus.Rejected}'`;
   }
-
-  if (roles.some(r => POWER_ROLES.includes(r))) return ''; // sees all active statuses, no clause
+  if (roles.some(r => POWER_ROLES.includes(r))) return ''; // power users: no clause
 
   const allowed = new Set<WorkflowStatus>();
   for (const role of roles) {
@@ -41,18 +21,16 @@ export function buildStatusFilter(roles: UserRole[], tab: 'active' | 'rejected')
     });
   }
 
-  if (allowed.size === 0) return `Status eq 'zzz-no-access'`; // safety net, matches nothing
+  if (allowed.size === 0) return `Status eq 'zzz-no-access'`;
   if (allowed.size >= ALL_ACTIVE_STATUSES.length) return '';
 
   const excluded = ALL_ACTIVE_STATUSES.filter(s => !allowed.has(s));
-
-  // reverse psychology: whichever list is shorter wins
   return allowed.size <= excluded.length
     ? [...allowed].map(s => `Status eq '${s}'`).join(' or ')
     : excluded.map(s => `Status ne '${s}'`).join(' and ');
 }
 
-/** buildDashboardFilter — drop the old prescreen param, keep role/profile/cohort/type/search */
+// buildDashboardFilter — unchanged apart from dropping any prescreen clause (Status supersedes it)
 export function buildDashboardFilter(filters: DashboardFilters): string {
   const clauses: string[] = [];
   const role = eqClause('RoleDesignation', filters.role);
@@ -65,7 +43,9 @@ export function buildDashboardFilter(filters: DashboardFilters): string {
 }
 ```
 
-## 3. `sharepoint.service.ts` — add count support
+`ROLE_STATUS_MAP` in `cohort.config.ts` already matches the hierarchy correctly — no change needed there.
+
+## 2. `sharepoint.service.ts`
 
 ```typescript
 export interface ListQuery {
@@ -90,7 +70,7 @@ private buildListUrl(listTitle: string, q: ListQuery): string {
   if (q.filter) params.push(`$filter=${q.filter}`);
   if (q.orderby) params.push(`$orderby=${q.orderby}`);
   params.push(`$top=${q.top ?? SERVER_PAGE_SIZE}`);
-  if (q.inlinecount) params.push(`$inlinecount=allpages`);   // NEW
+  if (q.inlinecount) params.push(`$inlinecount=allpages`);
   return `${this.ctx.list(listTitle)}/items?${params.join('&')}`;
 }
 
@@ -99,15 +79,13 @@ getPageByUrl<T>(url: string): Observable<Page<T>> {
     map(res => ({
       items: (res?.d?.results ?? []) as T[],
       nextUrl: (res?.d?.__next as string) ?? null,
-      total: res?.d?.__count != null ? Number(res.d.__count) : undefined,   // NEW
+      total: res?.d?.__count != null ? Number(res.d.__count) : undefined,
     })),
   );
 }
 ```
 
-`$inlinecount=allpages` is preserved in `__next` automatically by SharePoint, so `total` stays populated across Load More pages too — no extra plumbing needed there.
-
-## 4. `candidate.service.ts`
+## 3. `candidate.service.ts`
 
 ```typescript
 private queryFor(
@@ -124,25 +102,16 @@ private queryFor(
   const parts = [statusClause, otherClause, locClause].filter(Boolean);
   const combined = parts.map(p => (parts.length > 1 ? `(${p})` : p)).join(' and ');
 
-  return {
-    select: SELECT_FIELDS,
-    expand: EXPAND_FIELDS,
-    filter: combined,
-    orderby: 'Modified desc',
-    top: pageSize,
-    inlinecount: true,
-  };
+  return { select: SELECT_FIELDS, expand: EXPAND_FIELDS, filter: combined, orderby: 'Modified desc', top: pageSize, inlinecount: true };
 }
 
 getActivePage(location: LocationKey, filters: DashboardFilters, roles: UserRole[], pageSize = SERVER_PAGE_SIZE): Observable<Page<Candidate>> {
-  return this.sp
-    .getPage<any>(LOCATION_LIST[location], this.queryFor('active', filters, location, roles, pageSize))
+  return this.sp.getPage<any>(LOCATION_LIST[location], this.queryFor('active', filters, location, roles, pageSize))
     .pipe(map(page => this.mapPage(page, location)));
 }
 
 getRejectedPage(location: LocationKey, filters: DashboardFilters, roles: UserRole[], pageSize = SERVER_PAGE_SIZE): Observable<Page<Candidate>> {
-  return this.sp
-    .getPage<any>(LOCATION_LIST[location], this.queryFor('rejected', filters, location, roles, pageSize))
+  return this.sp.getPage<any>(LOCATION_LIST[location], this.queryFor('rejected', filters, location, roles, pageSize))
     .pipe(map(page => this.mapPage(page, location)));
 }
 
@@ -150,18 +119,16 @@ private mapPage(page: Page<any>, location: LocationKey): Page<Candidate> {
   return {
     items: page.items.map(i => this.mapCandidate(i, location)),
     nextUrl: page.nextUrl,
-    total: page.total,   // NEW — carry through
+    total: page.total,
   };
 }
 ```
 
-`getNextPage` needs no changes — it already follows `nextUrl` via `getPageByUrl`, which now also returns `total`.
+`getNextPage` / `getById` need no changes — `getById` should keep `pageSize: top:1` with no status filter (single-record lookup, unaffected by role visibility, since `AccessGuard`/`getAccess` already enforce visibility on the detail page).
 
-## 5. `dashboard.component.ts`
+## 4. `dashboard.component.ts`
 
-**Remove entirely**: `candidateVisibleForUser()` and the role-filter line inside `filteredRows` (`rows = rows.filter(c => this.candidateVisibleForUser(c))`). That's the client-side pass being replaced.
-
-**`filteredRows` getter** now only does the client-side text search (as agreed, kept client-side for now):
+**Delete** `candidateVisibleForUser()` entirely, and simplify `filteredRows`:
 
 ```typescript
 get filteredRows(): Candidate[] {
@@ -178,11 +145,11 @@ get filteredRows(): Candidate[] {
 }
 ```
 
-**`reload()`** — pass roles + pageSize, and capture `total`:
+**`reload()` / `loadMore()` / `setPageSize()`** (note: `forkJoin`, not `forJoin` — fixing that typo):
 
 ```typescript
-pageSize = 25;               // NEW
-total = 0;                    // NEW, replaces relying on rows.length for the count display
+pageSize = 25;
+total = 0;
 
 private reload(): void {
   this.loading = true;
@@ -196,10 +163,10 @@ private reload(): void {
     const active$ = this.candidates.getActivePage(this.location, this.filters, roles, this.pageSize);
     const rejected$ = this.candidates.getRejectedPage(this.location, this.filters, roles, this.pageSize);
 
-    forJoin([active$, rejected$]).subscribe({
+    forkJoin([active$, rejected$]).subscribe({
       next: ([actPage, rejPage]) => {
         this.rows = [...actPage.items, ...rejPage.items];
-        this.total = (actPage.total ?? 0) + (rejPage.total ?? 0);   // NEW
+        this.total = (actPage.total ?? 0) + (rejPage.total ?? 0);
         this.nextUrl = null;
         this.loading = false;
       },
@@ -216,7 +183,7 @@ private reload(): void {
     next: page => {
       this.rows = page.items;
       this.nextUrl = page.nextUrl;
-      this.total = page.total ?? page.items.length;   // NEW, fallback safety
+      this.total = page.total ?? page.items.length;
       this.loading = false;
     },
     error: err => { this.loading = false; this.error = this.humanError(err); },
@@ -230,22 +197,21 @@ loadMore(): void {
     next: page => {
       this.rows = this.rows.concat(page.items);
       this.nextUrl = page.nextUrl;
-      if (page.total != null) this.total = page.total;   // NEW, keeps count in sync
+      if (page.total != null) this.total = page.total;
       this.loading = false;
     },
     error: err => { this.loading = false; this.error = this.humanError(err); },
   });
 }
 
-/** NEW — page size selector */
 setPageSize(size: number): void {
-  if (size === this.pageSize) return;
-  this.pageSize = size;
+  if (Number(size) === this.pageSize) return;
+  this.pageSize = Number(size);
   this.reload();
 }
 ```
 
-**Template** (`dashboard.component.html`) — change the footer text and add the size selector next to Load More:
+## 5. `dashboard.component.html` — footer
 
 ```html
 <div class="card-foot">
@@ -260,8 +226,97 @@ setPageSize(size: number): void {
 </div>
 ```
 
-## 6. One thing I need you to verify — status updates on unassign
+## 6. The actual bug your voice note found — `confirmUnassign()` in `dashboard.component.ts`
 
-`computeStatus()` and `patchStatus()` are correct and already handle every stage. But your unassign flows (`confirmUnassign()`) do things like resetting Tech Round 2 back to `Pending` when a manager who skipped it gets unassigned, or resetting Onshore back to `Pending` when HR unassigns the HR round. **Each of those resets needs `patchStatus()` called right after**, or the `Status` column will go stale and the candidate will vanish from/appear in the wrong role's filtered view — since visibility is now driven entirely by that column.
+Two real problems in the current code:
 
-Check each `next: () => { ... this.reload(); }` block inside `confirmUnassign()` — if it doesn't already call `this.candidates.patchStatus(candidate)` before `reload()`, add it there. Same check applies to every `submitRound()` and `assignInterviewer()` success callback across the round panels (tech/mgmt/onshore/hr) — I haven't seen those panel component files yet, so I can't confirm this from what's uploaded. Upload `tech-round-panel.component.ts`, `mgmt-round-panel.component.ts`, `onshore-round-panel.component.ts`, and `hr-round-panel.component.ts` next and I'll check exactly this.
+**Problem A — missing `patchStatus()`.** Every branch resets round fields via `unassignInterviewer`/`submitRound` directly, then calls `reload()` immediately. Since visibility is now driven entirely by the `Status` column, and none of these branches recompute it, a candidate can vanish from — or wrongly linger in — the wrong role's filtered view until some *other* action happens to touch `patchStatus`.
+
+**Problem B — the actual logic bug you described.** In the HR-round unassign, branch "b) On-shore was NOT skipped" **unconditionally** resets on-shore back to `Pending`, even when on-shore was genuinely `Selected` (completed). Per your rule — *if the previous round is actually completed, it stays completed; only rounds a higher role skipped/N/A'd should reopen* — this branch is wrong and should be deleted. On-shore should only reopen when it was `N/A` (the actual skip case, branch a). If on-shore is `Selected`, unassigning HR just goes back to `Pending with HR` and leaves on-shore alone.
+
+Corrected version:
+
+```typescript
+confirmUnassign(): void {
+  if (!this.confirmCtx) return;
+  const candidate = this.confirmCtx.candidate as Candidate;
+  const round = this.confirmCtx.round;
+
+  this.candidates.unassignInterviewer(candidate, ROUNDS[round].prefix).subscribe({
+    next: () => {
+
+      // ---- HR-round special handling ----
+      if (round === 'hrRound') {
+        // a) On-shore was previously SKIPPED (N/A) — reopen it.
+        if (candidate.onshoreRound.selection === 'N/A') {
+          const clearSkipFields: Record<string, any> = {
+            OnShoreRoundInterviewSelection: 'Pending',
+            OnShoreRoundInterviewedById: null,
+            OnShoreRoundInterviewDate: null,
+          };
+          this.candidates.submitRound(candidate, clearSkipFields).subscribe({
+            next: () => {
+              this.candidates.patchStatus(candidate).subscribe({
+                next: () => { this.confirmCtx = null; this.reload(); },
+                error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+              });
+            },
+            error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+          });
+          return;
+        }
+
+        // b) On-shore genuinely COMPLETED (Selected) — leave it alone.
+        //    Just unassign HR round; status recomputes to "Pending with HR".
+        this.candidates.patchStatus(candidate).subscribe({
+          next: () => { this.confirmCtx = null; this.reload(); },
+          error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+        });
+        return;
+      }
+
+      // ---- Management-round special handling ----
+      if (round === 'mgmtRound') {
+        const tech2WasSkipped = candidate.techRound2.selection === 'N/A';
+        if (tech2WasSkipped) {
+          this.candidates.unassignInterviewer(candidate, ROUNDS.techRound2.prefix, true).subscribe({
+            next: () => {
+              this.candidates.patchStatus(candidate).subscribe({
+                next: () => { this.confirmCtx = null; this.reload(); },
+                error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+              });
+            },
+            error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+          });
+          return;
+        }
+        this.candidates.patchStatus(candidate).subscribe({
+          next: () => { this.confirmCtx = null; this.reload(); },
+          error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+        });
+        return;
+      }
+
+      // ---- All other rounds (Tech 1, Tech 2, On-shore) ----
+      this.candidates.patchStatus(candidate).subscribe({
+        next: () => { this.confirmCtx = null; this.reload(); },
+        error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+      });
+    },
+    error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+  });
+}
+```
+
+**Same fix applies to `confirmHrAssign()` and `confirmSelfAssign()`** — anywhere a round's fields are written directly (skip logic, business-unit set, etc.) rather than through `submit()` in the panel components (which already call `patchStatus` themselves per `hr-round-panel.component.ts`/`mgmt-round-panel.component.ts`). Check each `next: () => { ...; this.navigateToCandidate/reload(); }` in `startHrAssign`'s confirm flow and add `patchStatus` before navigating if it's not already there — I can see `assignInterviewer`/`skipOnshoreRound` in that flow don't call it either.
+
+## Sanity check on your voice-note scenario, end to end
+
+1. Tech1 Selected → Tech2 becomes assignable. Manager self-assigns to Mgmt round → skips Tech2 (N/A) → `patchStatus` → Status = `PendingMgmt`.
+2. Manager unassigns → Tech2 reopens to `Pending` → `patchStatus` recomputes → Status = `PendingTech2OrMgmt`. ✔️ Tech panel sees it again.
+3. Separately: On-shore skipped (N/A) → HR self-assigns HR round → `patchStatus` → Status = `PendingHR`.
+4. HR unassigns → on-shore reopens to `Pending` → `patchStatus` → Status = `PendingOnshoreOrHR`. ✔️ On-shore panel sees it again.
+5. Different case: On-shore actually completed (Selected) → HR self-assigns HR round → Status = `PendingHR`.
+6. HR unassigns → **on-shore is left untouched** (fixed) → `patchStatus` recomputes → Status = `PendingHR` again (since on-shore is still Selected, workflow logic keeps it at HR stage). ✔️ Matches "if previous round is completed, it stays in that status."
+
+That's the full set. Want me to also check `startHrAssign`/`confirmHrAssign` line-by-line the same way, since I flagged it above but haven't traced it as carefully as the unassign flow?
