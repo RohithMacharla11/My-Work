@@ -1,151 +1,138 @@
-Good diagnostics from the screenshots — I can pin down concrete root causes for all four. Let's go one at a time.
+Fair — "Load more" (infinite append) and true **page-by-page navigation** are different UX, and the "15 of 0 shown" is a separate bug on top of that. Let me fix both.
 
-## 1. Status not updating on unassign — the real cause (Edm.String error)
+## Why "15 of 0 shown"
 
-Image 1's error — `Cannot convert a primitive value to the expected type 'Edm.String'` — happens on the exact MERGE call shown in image 2, whose payload is:
-```json
-{ Status: "Pending with Tech Round 2 or Management Round", StatusCode: 2 }
-```
-This error means SharePoint's server-side column definition for `StatusCode` expects a **string**, but the request sends a raw JSON **number** (`2`, unquoted). That happens when the `StatusCode` column was actually created as **Single line of text** instead of **Number** — SharePoint then rejects the numeric primitive.
+`total` is initialized to `0` and only gets overwritten inside `next: page => { this.total = page.total ?? ... }`. If the request errored (which it was, from the `NaN` `$top` bug) or `page.total` came back `undefined` and the `??` fallback didn't fire correctly, `total` never updates from its initial `0` — while `rows` still holds whatever was last successfully loaded. That mismatch is exactly "15 of 0". Once the pagination fix below is in, this resolves itself, but I'm adding a safety fallback regardless.
 
-**This is why the interviewer removal succeeds but the status never updates**: `unassignInterviewer()` is a separate, earlier MERGE call that only touches `InterviewedById` (Person field) — that one succeeds fine. The *next* call, `patchStatus()`, is the one that throws, so `Status`/`StatusCode` never actually get written to SharePoint at all.
+## Redesigning to real Next/Previous pages
 
-**Fix — check the column type first:** go to the list settings for `StatusCode` on `MumbaiInterview` and confirm its type. If it's Text, recreate it properly as **Number**. If for some reason you want to keep it as Text (not recommended), the code-side fix is to send it as a quoted string and switch filter comparisons to string equality:
+SharePoint's REST API only gives you a **forward** skip-token (`__next`) — there's no server-side "previous page" link. So Previous has to be done by **caching the page URLs you've already visited** and re-fetching (or replaying) from that history, not by asking the server to go backward.
+
+**`dashboard.component.ts`** — replace `loadMore()`/`nextUrl` entirely with a page-history stack:
 
 ```typescript
-// workflow.service.ts patchStatus() — only needed if StatusCode column is Text, not Number
-return this.updateItem(LOCATION_LIST[candidate.location], candidate.id, {
-  Status: newStatus,
-  StatusCode: String(STATUS_CODE[newStatus]),   // quote it if column is Text
-});
-```
-```typescript
-// odata-filter.service.ts — match filter syntax to column type
-`StatusCode eq '${c}'`   // instead of `StatusCode eq ${c}` if Text
-```
-**Recreating the column as true Number is the correct fix** — it's faster to index/filter and avoids this entirely.
+pageSize = 25;
+total = 0;
+currentPage = 1;
+private pageUrlHistory: (string | null)[] = [null]; // index 0 = first page (no url needed)
+private nextUrl: string | null = null;
 
-## 2. Defensive fix — mutate local state before `patchStatus()`
+private reload(): void {
+  this.loading = true;
+  this.error = '';
+  this.rows = [];
+  this.nextUrl = null;
+  this.currentPage = 1;
+  this.pageUrlHistory = [null];
 
-Separately from the type bug, `confirmUnassign()` calls `patchStatus()` right after `unassignInterviewer()`, but `computeStatus()` reads off the **in-memory** `candidate` object — which `unassignInterviewer()` never touches (it only writes to SharePoint). So even once the Edm.String bug is fixed, status would be computed from **stale local fields**. Every round panel's `submit()` already does this correctly (mutates `this.candidate[round].selection` before calling `patchStatus`) — `confirmUnassign()` needs the same pattern:
+  const roles = this.currentUser.get().roles;
 
-```typescript
-confirmUnassign(): void {
-  if (!this.confirmCtx) return;
-  const candidate = this.confirmCtx.candidate as Candidate;
-  const round = this.confirmCtx.round;
+  if (this.tab === null) {
+    const active$ = this.candidates.getActivePage(this.location, this.filters, roles, this.pageSize);
+    const rejected$ = this.candidates.getRejectedPage(this.location, this.filters, roles, this.pageSize);
+    forkJoin([active$, rejected$]).subscribe({
+      next: ([actPage, rejPage]) => {
+        this.rows = [...actPage.items, ...rejPage.items];
+        this.total = (actPage.total ?? 0) + (rejPage.total ?? 0);
+        this.nextUrl = null; // combined view has no "next" concept
+        this.loading = false;
+      },
+      error: err => { this.loading = false; this.error = this.humanError(err); this.total = 0; },
+    });
+    return;
+  }
 
-  this.candidates.unassignInterviewer(candidate, ROUNDS[round].prefix).subscribe({
-    next: () => {
-      candidate[round].interviewedBy = null;   // NEW — mirror the write locally
+  const source$ = this.tab === 'active'
+    ? this.candidates.getActivePage(this.location, this.filters, roles, this.pageSize)
+    : this.candidates.getRejectedPage(this.location, this.filters, roles, this.pageSize);
 
-      if (round === 'hrRound') {
-        if (candidate.onshoreRound.selection === 'N/A') {
-          const clearSkipFields: Record<string, any> = {
-            OnShoreRoundInterviewSelection: 'Pending',
-            OnShoreRoundInterviewedById: null,
-            OnShoreRoundInterviewDate: null,
-          };
-          this.candidates.submitRound(candidate, clearSkipFields).subscribe({
-            next: () => {
-              candidate.onshoreRound.selection = RoundStatus.Pending;   // NEW
-              candidate.onshoreRound.interviewedBy = null;              // NEW
-              candidate.onshoreRound.interviewDate = null;              // NEW
-              this.candidates.patchStatus(candidate).subscribe({
-                next: () => { this.confirmCtx = null; this.reload(); },
-                error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
-              });
-            },
-            error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
-          });
-          return;
-        }
-        this.candidates.patchStatus(candidate).subscribe({
-          next: () => { this.confirmCtx = null; this.reload(); },
-          error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
-        });
-        return;
-      }
-
-      if (round === 'mgmtRound') {
-        const tech2WasSkipped = candidate.techRound2.selection === 'N/A';
-        if (tech2WasSkipped) {
-          this.candidates.unassignInterviewer(candidate, ROUNDS.techRound2.prefix, true).subscribe({
-            next: () => {
-              candidate.techRound2.selection = RoundStatus.Pending;   // NEW
-              candidate.techRound2.interviewedBy = null;              // NEW
-              this.candidates.patchStatus(candidate).subscribe({
-                next: () => { this.confirmCtx = null; this.reload(); },
-                error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
-              });
-            },
-            error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
-          });
-          return;
-        }
-        this.candidates.patchStatus(candidate).subscribe({
-          next: () => { this.confirmCtx = null; this.reload(); },
-          error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
-        });
-        return;
-      }
-
-      this.candidates.patchStatus(candidate).subscribe({
-        next: () => { this.confirmCtx = null; this.reload(); },
-        error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
-      });
+  source$.subscribe({
+    next: page => {
+      this.rows = page.items;
+      this.nextUrl = page.nextUrl;
+      this.total = page.total ?? 0;
+      this.loading = false;
     },
-    error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+    error: err => { this.loading = false; this.error = this.humanError(err); this.total = 0; },
   });
 }
-```
 
-**Same gap exists in `confirmHrAssign()`'s onshore-skip branch** — `skipOnshoreRound()` changes the onshore selection to `N/A` (a real stage change), but the current code never calls `patchStatus` afterward. Add the local mutation + `patchStatus` call there too, right after the `skipOnshoreRound` write succeeds.
+get canGoNext(): boolean { return !!this.nextUrl && !this.loading; }
+get canGoPrev(): boolean { return this.currentPage > 1 && !this.loading; }
 
-## 3. Rejected candidates showing in the Active tab (power users)
+get pageStart(): number { return this.rows.length ? (this.currentPage - 1) * this.pageSize + 1 : 0; }
+get pageEnd(): number { return (this.currentPage - 1) * this.pageSize + this.rows.length; }
 
-Found it — in `buildStatusFilter()`:
-```typescript
-if (roles.some(r => POWER_ROLES.includes(r))) return '';
-```
-For power users on the **active** tab, this returns an empty filter — meaning no status constraint at all, so `Rejected` candidates leak straight into the active view. Fix:
-
-```typescript
-export function buildStatusFilter(roles: UserRole[], tab: 'active' | 'rejected'): string {
-  if (tab === 'rejected') return `StatusCode eq ${STATUS_CODE[WorkflowStatus.Rejected]}`;
-
-  if (roles.some(r => POWER_ROLES.includes(r))) {
-    return `StatusCode ne ${STATUS_CODE[WorkflowStatus.Rejected]}`;   // FIXED — still exclude Rejected
-  }
-  // ...rest unchanged
+goNext(): void {
+  if (!this.nextUrl) return;
+  this.loading = true;
+  this.candidates.getNextPage(this.nextUrl, this.location).subscribe({
+    next: page => {
+      this.pageUrlHistory.push(this.nextUrl); // remember the URL that GOT us to this new page
+      this.currentPage++;
+      this.rows = page.items;
+      this.nextUrl = page.nextUrl;
+      if (page.total != null) this.total = page.total;
+      this.loading = false;
+    },
+    error: err => { this.loading = false; this.error = this.humanError(err); },
+  });
 }
-```
 
-## 4. "Someone above my hierarchy shouldn't appear"
+goPrev(): void {
+  if (this.currentPage <= 1) return;
+  this.loading = true;
+  this.currentPage--;
+  const targetUrl = this.pageUrlHistory[this.currentPage - 1]; // null = re-run the original first-page query
 
-This is very likely the **same bug as #3**, not a separate one. Your `ROLE_STATUS_MAP` in `cohort.config.ts` already correctly scopes each role's status set (TechPanel only sees Tech-stage statuses, MgmtPanel sees Tech+Mgmt, etc.) — that logic is sound and enforces the hierarchy correctly *as long as it's actually applied*. If you tested this while logged in as an HR/Recruiter (power role), the empty-filter bug in #3 means you were seeing literally everything, which would look like "hierarchy isn't working" even though it is for non-power roles. Retest with a Tech-only or Mgmt-only test account after the #3 fix — if it's still leaking, tell me which role/candidate combination and I'll dig into `ROLE_STATUS_MAP` itself.
+  const request$ = targetUrl
+    ? this.candidates.getNextPage(targetUrl, this.location)
+    : (this.tab === 'active'
+        ? this.candidates.getActivePage(this.location, this.filters, this.currentUser.get().roles, this.pageSize)
+        : this.candidates.getRejectedPage(this.location, this.filters, this.currentUser.get().roles, this.pageSize));
 
-## 5. Pagination NaN + adding 10/25/50/100
+  request$.subscribe({
+    next: page => {
+      this.rows = page.items;
+      this.nextUrl = page.nextUrl;
+      if (page.total != null) this.total = page.total;
+      this.pageUrlHistory = this.pageUrlHistory.slice(0, this.currentPage); // trim any forward history past here
+      this.loading = false;
+    },
+    error: err => { this.loading = false; this.error = this.humanError(err); },
+  });
+}
 
-Image 4 confirms it: `$top expression "NaN" is not valid`. Root cause — you're using `[ngValue]` on the `<option>` elements (needed for non-string binding) **and** manually reading `$event.target.value` in the `(change)` handler. With `[ngValue]`, the raw DOM `value` is an Angular-internal index string (like `"1: 50"`), not your actual number — so `Number(...)` on it produces `NaN`. Fix by using `ngModelChange` instead, which gives you the real bound value directly:
-
-```html
-<select class="filter" [ngModel]="pageSize" (ngModelChange)="setPageSize($event)">
-  <option [ngValue]="10">10</option>
-  <option [ngValue]="25">25</option>
-  <option [ngValue]="50">50</option>
-  <option [ngValue]="100">100</option>
-</select>
-```
-
-```typescript
 setPageSize(size: number): void {
   if (size === this.pageSize) return;
   this.pageSize = size;
-  this.reload();
+  this.reload(); // always resets to page 1 with the new size — the only sane behavior
 }
 ```
 
-Note: switched from `[(ngModel)]` (two-way box syntax) to one-way `[ngModel]` + `(ngModelChange)` — combining both on the same element was part of what caused the bad value to be read. This also gives you the 10/25/50/100 set you asked for.
+**`dashboard.component.html`** — replace the old footer:
 
-Want me to also check `confirmHrAssign()` end-to-end the same way I did `confirmUnassign()`, since it shares the missing-`patchStatus`-after-skip issue?
+```html
+<div class="card-foot">
+  <span class="dim small">{{ pageStart }}–{{ pageEnd }} of {{ total }} shown</span>
+
+  <select class="filter" [ngModel]="pageSize" (ngModelChange)="setPageSize($event)">
+    <option [ngValue]="10">10</option>
+    <option [ngValue]="25">25</option>
+    <option [ngValue]="50">50</option>
+    <option [ngValue]="100">100</option>
+  </select>
+
+  <span class="dim small" *ngIf="loading">Loading…</span>
+
+  <div class="page-nav">
+    <button class="btn ghost sm" [disabled]="!canGoPrev" (click)="goPrev()">← Previous</button>
+    <span class="dim small">Page {{ currentPage }}</span>
+    <button class="btn ghost sm" [disabled]="!canGoNext" (click)="goNext()">Next →</button>
+  </div>
+</div>
+```
+
+**Why Previous re-fetches instead of just replaying cached rows in memory:** I could cache each page's actual `items` array too (not just the URL) so Previous is instant with zero network call — that's a nice upgrade if you want it, since a manager going back and forth doesn't need a fresh SharePoint round-trip each time. Say the word and I'll add an in-memory `pageCache: Candidate[][]` alongside the URL history so `goPrev()` just reads from cache instead of calling `getNextPage`/`getActivePage` again — only `goNext()` into brand-new territory would hit the network.
+
+One caveat worth flagging: since filters/search/tab changes all call `reload()` (which resets `pageUrlHistory` to `[null]`), Previous only ever needs to go back within the *current* filter set — that's correct and matches how every paginated table works, just confirming it's intentional and not a gap.
