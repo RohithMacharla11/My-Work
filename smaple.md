@@ -1,79 +1,151 @@
-That's a reasonable optimization, but let me flag the tradeoffs before you commit, since it touches a live SharePoint column with existing data.
+Good diagnostics from the screenshots — I can pin down concrete root causes for all four. Let's go one at a time.
 
-**What it actually saves vs. what it doesn't**
+## 1. Status not updating on unassign — the real cause (Edm.String error)
 
-Numeric codes do shrink the filter clause (`StatusCode eq 3` vs `Status eq 'Pending with Tech Round 2 or Management Round'` — ~50 fewer characters per clause). But your original 404 was caused by the **`$select`/`$expand` field list** (skills×3×10 + rounds×5 + person expansions), which is hundreds of characters and completely unrelated to Status. That fix (splitting `DASHBOARD_SELECT_FIELDS` from the full detail set) is still necessary regardless of what you do with Status — numeric codes alone won't fix the 404 if you keep sending the full field list.
-
-That said, shorter status clauses do help, especially for roles like OnshorePanel where 5 statuses get OR'd together. Worth doing as a second layer of safety margin.
-
-**The right way to do it — don't replace the string column, add a parallel numeric one**
-
-Replacing the Choice column outright breaks anything reading the human-readable value (SharePoint list views, any reports, HR staff eyeballing the list) and requires a one-time data migration with real risk of mismatches. Instead, add a second column purely for filtering:
-
-**1. SharePoint** — add a new column `StatusCode` (type: **Number**) to all three lists, alongside the existing `Status` (Choice, keep as-is for humans to read).
-
-**2. `cohort.config.ts`** — add the numeric mapping next to the existing enum:
-
-```typescript
-export const STATUS_CODE: Record<WorkflowStatus, number> = {
-  [WorkflowStatus.Rejected]: 0,
-  [WorkflowStatus.PendingTech1]: 1,
-  [WorkflowStatus.PendingTech2OrMgmt]: 2,
-  [WorkflowStatus.PendingMgmt]: 3,
-  [WorkflowStatus.PendingOnshoreOrHR]: 4,
-  [WorkflowStatus.PendingOnshore]: 5,
-  [WorkflowStatus.PendingHR]: 6,
-};
-
-export const CODE_TO_STATUS: Record<number, WorkflowStatus> =
-  Object.fromEntries(Object.entries(STATUS_CODE).map(([k, v]) => [v, k as WorkflowStatus])) as any;
+Image 1's error — `Cannot convert a primitive value to the expected type 'Edm.String'` — happens on the exact MERGE call shown in image 2, whose payload is:
+```json
+{ Status: "Pending with Tech Round 2 or Management Round", StatusCode: 2 }
 ```
+This error means SharePoint's server-side column definition for `StatusCode` expects a **string**, but the request sends a raw JSON **number** (`2`, unquoted). That happens when the `StatusCode` column was actually created as **Single line of text** instead of **Number** — SharePoint then rejects the numeric primitive.
 
-**3. `workflow.service.ts` `computeStatus()`** — no change to the logic itself; just write both fields wherever Status is patched:
+**This is why the interviewer removal succeeds but the status never updates**: `unassignInterviewer()` is a separate, earlier MERGE call that only touches `InterviewedById` (Person field) — that one succeeds fine. The *next* call, `patchStatus()`, is the one that throws, so `Status`/`StatusCode` never actually get written to SharePoint at all.
+
+**Fix — check the column type first:** go to the list settings for `StatusCode` on `MumbaiInterview` and confirm its type. If it's Text, recreate it properly as **Number**. If for some reason you want to keep it as Text (not recommended), the code-side fix is to send it as a quoted string and switch filter comparisons to string equality:
 
 ```typescript
-patchStatus(candidate: Candidate): Observable<void> {
-  const newStatus = WorkflowService.computeStatus(candidate);
-  return this.updateItem(LOCATION_LIST[candidate.location], candidate.id, {
-    Status: newStatus,
-    StatusCode: STATUS_CODE[newStatus],   // NEW
+// workflow.service.ts patchStatus() — only needed if StatusCode column is Text, not Number
+return this.updateItem(LOCATION_LIST[candidate.location], candidate.id, {
+  Status: newStatus,
+  StatusCode: String(STATUS_CODE[newStatus]),   // quote it if column is Text
+});
+```
+```typescript
+// odata-filter.service.ts — match filter syntax to column type
+`StatusCode eq '${c}'`   // instead of `StatusCode eq ${c}` if Text
+```
+**Recreating the column as true Number is the correct fix** — it's faster to index/filter and avoids this entirely.
+
+## 2. Defensive fix — mutate local state before `patchStatus()`
+
+Separately from the type bug, `confirmUnassign()` calls `patchStatus()` right after `unassignInterviewer()`, but `computeStatus()` reads off the **in-memory** `candidate` object — which `unassignInterviewer()` never touches (it only writes to SharePoint). So even once the Edm.String bug is fixed, status would be computed from **stale local fields**. Every round panel's `submit()` already does this correctly (mutates `this.candidate[round].selection` before calling `patchStatus`) — `confirmUnassign()` needs the same pattern:
+
+```typescript
+confirmUnassign(): void {
+  if (!this.confirmCtx) return;
+  const candidate = this.confirmCtx.candidate as Candidate;
+  const round = this.confirmCtx.round;
+
+  this.candidates.unassignInterviewer(candidate, ROUNDS[round].prefix).subscribe({
+    next: () => {
+      candidate[round].interviewedBy = null;   // NEW — mirror the write locally
+
+      if (round === 'hrRound') {
+        if (candidate.onshoreRound.selection === 'N/A') {
+          const clearSkipFields: Record<string, any> = {
+            OnShoreRoundInterviewSelection: 'Pending',
+            OnShoreRoundInterviewedById: null,
+            OnShoreRoundInterviewDate: null,
+          };
+          this.candidates.submitRound(candidate, clearSkipFields).subscribe({
+            next: () => {
+              candidate.onshoreRound.selection = RoundStatus.Pending;   // NEW
+              candidate.onshoreRound.interviewedBy = null;              // NEW
+              candidate.onshoreRound.interviewDate = null;              // NEW
+              this.candidates.patchStatus(candidate).subscribe({
+                next: () => { this.confirmCtx = null; this.reload(); },
+                error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+              });
+            },
+            error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+          });
+          return;
+        }
+        this.candidates.patchStatus(candidate).subscribe({
+          next: () => { this.confirmCtx = null; this.reload(); },
+          error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+        });
+        return;
+      }
+
+      if (round === 'mgmtRound') {
+        const tech2WasSkipped = candidate.techRound2.selection === 'N/A';
+        if (tech2WasSkipped) {
+          this.candidates.unassignInterviewer(candidate, ROUNDS.techRound2.prefix, true).subscribe({
+            next: () => {
+              candidate.techRound2.selection = RoundStatus.Pending;   // NEW
+              candidate.techRound2.interviewedBy = null;              // NEW
+              this.candidates.patchStatus(candidate).subscribe({
+                next: () => { this.confirmCtx = null; this.reload(); },
+                error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+              });
+            },
+            error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+          });
+          return;
+        }
+        this.candidates.patchStatus(candidate).subscribe({
+          next: () => { this.confirmCtx = null; this.reload(); },
+          error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+        });
+        return;
+      }
+
+      this.candidates.patchStatus(candidate).subscribe({
+        next: () => { this.confirmCtx = null; this.reload(); },
+        error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+      });
+    },
+    error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
   });
 }
 ```
 
-**4. `odata-filter.service.ts` `buildStatusFilter`** — switch to numbers, no quotes needed:
+**Same gap exists in `confirmHrAssign()`'s onshore-skip branch** — `skipOnshoreRound()` changes the onshore selection to `N/A` (a real stage change), but the current code never calls `patchStatus` afterward. Add the local mutation + `patchStatus` call there too, right after the `skipOnshoreRound` write succeeds.
+
+## 3. Rejected candidates showing in the Active tab (power users)
+
+Found it — in `buildStatusFilter()`:
+```typescript
+if (roles.some(r => POWER_ROLES.includes(r))) return '';
+```
+For power users on the **active** tab, this returns an empty filter — meaning no status constraint at all, so `Rejected` candidates leak straight into the active view. Fix:
 
 ```typescript
 export function buildStatusFilter(roles: UserRole[], tab: 'active' | 'rejected'): string {
   if (tab === 'rejected') return `StatusCode eq ${STATUS_CODE[WorkflowStatus.Rejected]}`;
-  if (roles.some(r => POWER_ROLES.includes(r))) return '';
 
-  const allowed = new Set<number>();
-  for (const role of roles) {
-    (ROLE_STATUS_MAP[role] ?? []).forEach(s => {
-      if (s !== WorkflowStatus.Rejected) allowed.add(STATUS_CODE[s]);
-    });
+  if (roles.some(r => POWER_ROLES.includes(r))) {
+    return `StatusCode ne ${STATUS_CODE[WorkflowStatus.Rejected]}`;   // FIXED — still exclude Rejected
   }
-
-  const allActiveCodes = Object.values(STATUS_CODE).filter(c => c !== STATUS_CODE[WorkflowStatus.Rejected]);
-  if (allowed.size === 0) return `StatusCode eq -1`; // matches nothing
-  if (allowed.size >= allActiveCodes.length) return '';
-
-  const excluded = allActiveCodes.filter(c => !allowed.has(c));
-  const orGroup = [...allowed].map(c => `StatusCode eq ${c}`).join(' or ');
-  const andGroup = excluded.map(c => `StatusCode ne ${c}`).join(' and ');
-
-  if (allowed.size <= excluded.length) {
-    return allowed.size > 1 ? `(${orGroup})` : orGroup;
-  }
-  return andGroup;
+  // ...rest unchanged
 }
 ```
 
-Same parenthesization rule as before still applies — a multi-clause OR group must still be wrapped, that bug wasn't about strings vs numbers.
+## 4. "Someone above my hierarchy shouldn't appear"
 
-**5. Everywhere else** (`candidate.model.ts`, templates, `getDetailedStatusLabel`, etc.) — **keep using `Status` (the string) for anything shown to a human.** Only the filter-building path touches `StatusCode`. `candidate.service.ts`'s `mapCandidate()` doesn't need to read `StatusCode` at all — it's write-only from the app's perspective, purely there to make filters cheap for SharePoint's indexer too (Number columns index and filter faster than Choice/Text in large lists).
+This is very likely the **same bug as #3**, not a separate one. Your `ROLE_STATUS_MAP` in `cohort.config.ts` already correctly scopes each role's status set (TechPanel only sees Tech-stage statuses, MgmtPanel sees Tech+Mgmt, etc.) — that logic is sound and enforces the hierarchy correctly *as long as it's actually applied*. If you tested this while logged in as an HR/Recruiter (power role), the empty-filter bug in #3 means you were seeing literally everything, which would look like "hierarchy isn't working" even though it is for non-power roles. Retest with a Tech-only or Mgmt-only test account after the #3 fix — if it's still leaking, tell me which role/candidate combination and I'll dig into `ROLE_STATUS_MAP` itself.
 
-**One migration step you do need**: existing rows won't have `StatusCode` populated yet. Either run `patchStatus()` once across all existing candidates (a small one-off script or admin action) to backfill it, or have `buildStatusFilter`/dashboard fall back gracefully — but the cleanest option is the backfill, since a stale/missing `StatusCode` would otherwise silently hide existing candidates from filtered views.
+## 5. Pagination NaN + adding 10/25/50/100
 
-Want me to write that backfill script (loop all items in each list, call `patchStatus` for each) as a one-time admin utility you can run once and then remove?
+Image 4 confirms it: `$top expression "NaN" is not valid`. Root cause — you're using `[ngValue]` on the `<option>` elements (needed for non-string binding) **and** manually reading `$event.target.value` in the `(change)` handler. With `[ngValue]`, the raw DOM `value` is an Angular-internal index string (like `"1: 50"`), not your actual number — so `Number(...)` on it produces `NaN`. Fix by using `ngModelChange` instead, which gives you the real bound value directly:
+
+```html
+<select class="filter" [ngModel]="pageSize" (ngModelChange)="setPageSize($event)">
+  <option [ngValue]="10">10</option>
+  <option [ngValue]="25">25</option>
+  <option [ngValue]="50">50</option>
+  <option [ngValue]="100">100</option>
+</select>
+```
+
+```typescript
+setPageSize(size: number): void {
+  if (size === this.pageSize) return;
+  this.pageSize = size;
+  this.reload();
+}
+```
+
+Note: switched from `[(ngModel)]` (two-way box syntax) to one-way `[ngModel]` + `(ngModelChange)` — combining both on the same element was part of what caused the bad value to be read. This also gives you the 10/25/50/100 set you asked for.
+
+Want me to also check `confirmHrAssign()` end-to-end the same way I did `confirmUnassign()`, since it shares the missing-`patchStatus`-after-skip issue?
