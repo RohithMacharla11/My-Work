@@ -1,59 +1,61 @@
-This confirms the actual bug: `MgmtRoundPanelComponent.assignToMe()` mutates `candidate.techRound2.selection` directly on the shared candidate object and calls `this.ngOnChanges()` — but that only refreshes the **mgmt panel's own** state. `TechRoundPanelComponent` is a sibling component bound to the same `[candidate]` input; since you're mutating the object in place (not replacing the reference), Angular's `OnChanges` never fires on the tech panel — it only fires when the `@Input` reference itself changes. So the tech panel keeps showing stale "awaiting feedback" until a full page refresh re-fetches the candidate as a brand-new object.
+Confirmed — this is exactly it. Neither branch of `confirmSelfAssign()` calls `patchStatus()` at all. It writes `InterviewedById` (and `NotApplicable` for tech2 in the skip case) via `submitRound`/`assignInterviewer`, then just closes the dialog and navigates — `Status`/`StatusCode` are never touched from this path. That's why the panel (which does call `patchStatus`) eventually works but the dashboard doesn't.
 
-The fix: have each round panel tell the parent when it changed something, and have the parent refresh the whole candidate so all four panels re-sync together.
+Here's the exact patch — two small additions, nothing else changed:
 
-**1. Add an output to each round panel** (`tech-round-panel.component.ts`, `mgmt-round-panel.component.ts`, `onshore-round-panel.component.ts`, `hr-round-panel.component.ts`):
-
-```ts
-@Output() changed = new EventEmitter<void>();
-```
-
-**2. Emit it wherever a write succeeds** — in each panel's `submit()` and `assignToMe()` success callbacks. For `mgmt-round-panel.component.ts`, in `assignToMe()`:
+**Branch 1 — skip-to-Mgmt case (lines 439–443):**
 
 ```ts
-this.candidates.submitRound(this.candidate, fields).subscribe({
+this.candidates.submitRound(candidate, fields).subscribe({
   next: () => {
-    this.candidate.mgmtRound.interviewedBy = user;
-    if (skippingT2) this.candidate.techRound2.selection = RoundStatus.NotApplicable;
+    candidate.techRound2.selection = RoundStatus.NotApplicable;
+    candidate.mgmtRound.interviewedBy = user;
 
-    this.ngOnChanges();
-    this.changed.emit();   // ← NEW
-
-    this.candidates.patchStatus(this.candidate).subscribe({
-      next: () => {},
-      error: err => console.error('patchStatus failed after assignToMe', err),
+    this.candidates.patchStatus(candidate).subscribe({
+      next: () => {
+        candidate.status = WorkflowService.computeStatus(candidate);
+        this.confirmCtx = null;
+        this.reload();
+        this.navigateToCandidate(candidate);
+      },
+      error: err => {
+        this.error = this.humanError(err);
+        this.confirmCtx = null;
+      },
     });
   },
-  error: err => console.error('submitRound failed in assignToMe', err),
+  error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
+});
+return;
+```
+
+**Branch 2 — plain self-assign case (lines 446–450):**
+
+```ts
+this.candidates.assignInterviewer(candidate, ROUNDS[round].prefix, user).subscribe({
+  next: () => {
+    candidate[round].interviewedBy = user;
+
+    this.candidates.patchStatus(candidate).subscribe({
+      next: () => {
+        candidate.status = WorkflowService.computeStatus(candidate);
+        this.confirmCtx = null;
+        this.reload();
+        this.navigateToCandidate(candidate);
+      },
+      error: err => {
+        this.error = this.humanError(err);
+        this.confirmCtx = null;
+      },
+    });
+  },
+  error: err => { this.error = this.humanError(err); this.confirmCtx = null; },
 });
 ```
 
-Same one-line addition (`this.changed.emit();`) right after `this.ngOnChanges()` in `submit()` for every panel — tech, mgmt, onshore, hr — so any write anywhere refreshes the whole candidate.
+Notes on what I added and why:
+- `patchStatus(candidate)` — the actual missing write; this recalculates and persists `Status`/`StatusCode` in SharePoint.
+- `candidate.status = WorkflowService.computeStatus(candidate)` — updates the in-memory object immediately, so if `navigateToCandidate` lands you on the detail page (or if the row is still visible for a moment), it's not stale.
+- `this.reload()` — refreshes the dashboard table/count so the row's status column and tab bucket (active/rejected/etc.) reflect reality right away, without needing a manual page refresh.
+- Error handling mirrors your existing pattern (`this.error = this.humanError(err)`) rather than a bare `console.error`, consistent with the rest of this method.
 
-**3. Wire it up in `candidate-detail.component.html`:**
-
-```html
-<app-tech-round-panel [candidate]="candidate" (changed)="refresh()"></app-tech-round-panel>
-<app-mgmt-round-panel [candidate]="candidate" (changed)="refresh()"></app-mgmt-round-panel>
-<app-onshore-round-panel [candidate]="candidate" (changed)="refresh()"></app-onshore-round-panel>
-<app-hr-round-panel [candidate]="candidate" (changed)="refresh()"></app-hr-round-panel>
-```
-
-**4. Add `refresh()` to `candidate-detail.component.ts`** — re-fetch the candidate as a new object, which forces `OnChanges` in every panel since the reference actually changes this time:
-
-```ts
-refresh(): void {
-  const location = this.route.snapshot.paramMap.get('location') as LocationKey;
-  const id = Number(this.route.snapshot.paramMap.get('id'));
-  this.candidates.getById(location, id).subscribe({
-    next: candidate => {
-      if (!candidate) return;
-      this.attachSkillLabels(candidate);
-    },
-  });
-}
-```
-
-This reuses your existing `attachSkillLabels()` (which already does `this.candidate = candidate; this.loading = false;`), so skill labels stay attached correctly on every refresh too.
-
-Now: assigning from inside the mgmt panel skips Tech Round 2 → emits `changed` → parent re-fetches candidate → new object reference flows into the tech panel → its `ngOnChanges()` fires → shows "N/A" immediately, no manual page refresh needed. Same fix applies automatically to any other cross-panel state changes (e.g. HR round unassign resetting onshore fields) going forward.
+This should fully close the loop — both the candidate-detail panel and the dashboard now write status through the same corrected `computeStatus()` you already fixed, and both update their own view of the candidate immediately after.
