@@ -1,120 +1,133 @@
-Got it — clean three-zone footer: left = count for current page, middle = page-size selector, right = prev/next. Here's the exact layout and the component wiring to make sure it actually renders and functions.
+Good set of catches — these are all real, and #1 and #2 are actually the same root cause, which is worth understanding before you patch it.
 
-## `dashboard.component.html` — footer only
+## 1 & 2. People-picker showing wrong group + HR assignment saving as "Unassigned" — same bug
+
+In `dashboard.component.html`'s HR-assign modal, the people-picker is bound like this:
 
 ```html
-<div class="card-foot pager">
+<app-people-picker [groups]="ROUNDS[assignCtx.round].assignGroup" (picked)="onPicked($event)"></app-people-picker>
+```
 
-  <!-- LEFT: count for current page -->
-  <div class="pager-left">
-    <span class="dim small">{{ rows.length }} item{{ rows.length === 1 ? '' : 's' }} on this page</span>
-    <span class="dim small" *ngIf="loading">Loading…</span>
+But when the candidate's on-shore round hasn't been decided yet, you show a **radio choice** (`assignTargetRound`) letting HR pick *which* round to assign — onshore or HR. The people-picker's `[groups]` binding never looks at that radio value; it's locked to `assignCtx.round` (fixed at the moment the dialog opened) for the entire time the dialog is open. So switching the radio button visually looks like it changes something, but the picker keeps showing whichever group was set initially — that's your bug #1.
+
+Bug #2 is the downstream effect: `confirmHrAssign()`'s `targetPrefix` **does** correctly compute off `assignTargetRound`, but if the picker never actually filtered to the right group, HR could easily end up picking a person from the *wrong* group (e.g. an Onshore panelist while `assignTargetRound` silently says `'hrRound'`) — the field gets written correctly, but to a person who isn't really an HR user, which is why it can look like nothing saved.
+
+**Fix — both the people-picker and the note text need to react live to the radio selection:**
+
+```html
+<ng-container *ngIf="(assignCtx.round === 'onshoreRound' || assignCtx.round === 'hrRound') && !onshoreDecided(assignCtx.candidate)">
+  <div class="field">
+    <label>Assign to which round?</label>
+    <div class="radio-group">
+      <label class="radio-option">
+        <input type="radio" name="targetRound" value="onshoreRound" [(ngModel)]="assignTargetRound">
+        <span>On-shore round</span>
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="targetRound" value="hrRound" [(ngModel)]="assignTargetRound">
+        <span>HR round</span>
+      </label>
+    </div>
   </div>
+</ng-container>
 
-  <!-- MIDDLE: page size selector -->
-  <div class="pager-mid">
-    <label class="dim small" for="pageSizeSelect">Show</label>
-    <select id="pageSizeSelect" class="filter" [ngModel]="pageSize" (ngModelChange)="setPageSize($event)">
-      <option [ngValue]="10">10</option>
-      <option [ngValue]="25">25</option>
-      <option [ngValue]="50">50</option>
-      <option [ngValue]="100">100</option>
-    </select>
-    <span class="dim small">per page</span>
-  </div>
-
-  <!-- RIGHT: prev / page indicator / next -->
-  <div class="pager-right">
-    <button class="btn ghost sm" [disabled]="!canGoPrev" (click)="goPrev()">← Previous</button>
-    <span class="dim small">Page {{ currentPage }} of {{ totalPages }}</span>
-    <button class="btn ghost sm" [disabled]="!canGoNext" (click)="goNext()">Next →</button>
-  </div>
-
+<div class="field">
+  <label>Search user</label>
+  <app-people-picker [groups]="ROUNDS[assignTargetRound].assignGroup" (picked)="onPicked($event)"></app-people-picker>
+  <p class="modal-hint">
+    Only members of <b>{{ ROUNDS[assignTargetRound].assignGroup.join(' or ') }}</b> should be chosen.
+  </p>
 </div>
 ```
 
-## `dashboard.component.scss` (or wherever `.card-foot` lives) — add the layout
+Key change: **both** the `[groups]` binding and the hint text now read `ROUNDS[assignTargetRound]` instead of `ROUNDS[assignCtx.round]` / the static `assignCtx.groupName`. Since `assignTargetRound` is a plain component property, Angular re-evaluates this on every change detection cycle — so flipping the radio instantly updates which group the picker searches, with no extra code needed in the component.
 
-```scss
-.pager {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding: 12px 16px;
-}
-.pager-left, .pager-mid, .pager-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.pager-mid { flex: 1; justify-content: center; }
-```
-
-## `dashboard.component.ts` — confirm these exact members exist (this is the full, final version — replace whatever pagination code you have now with this)
-
+**Also double check `startHrAssign()`** sets a sane default so the picker isn't empty before the user touches the radio:
 ```typescript
-pageSize = 25;
-currentPage = 1;
-total = 0;
-
-get totalPages(): number { return Math.max(1, Math.ceil(this.total / this.pageSize)); }
-get canGoNext(): boolean { return this.currentPage < this.totalPages && !this.loading; }
-get canGoPrev(): boolean { return this.currentPage > 1 && !this.loading; }
-
-private reload(): void {
-  this.loading = true;
-  this.error = '';
-  this.rows = [];
-  const roles = this.currentUser.get().roles;
-
-  if (this.tab === null) {
-    const active$ = this.candidates.getActivePage(this.location, this.filters, roles, this.pageSize, this.currentPage);
-    const rejected$ = this.candidates.getRejectedPage(this.location, this.filters, roles, this.pageSize, this.currentPage);
-    forkJoin([active$, rejected$]).subscribe({
-      next: ([a, r]) => {
-        this.rows = [...a.items, ...r.items];
-        this.total = (a.total ?? 0) + (r.total ?? 0);
-        this.loading = false;
-      },
-      error: err => { this.loading = false; this.error = this.humanError(err); this.total = 0; },
-    });
-    return;
-  }
-
-  const source$ = this.tab === 'active'
-    ? this.candidates.getActivePage(this.location, this.filters, roles, this.pageSize, this.currentPage)
-    : this.candidates.getRejectedPage(this.location, this.filters, roles, this.pageSize, this.currentPage);
-
-  source$.subscribe({
-    next: page => { this.rows = page.items; this.total = page.total ?? 0; this.loading = false; },
-    error: err => { this.loading = false; this.error = this.humanError(err); this.total = 0; },
-  });
-}
-
-goToPage(n: number): void {
-  if (n < 1 || n > this.totalPages || n === this.currentPage) return;
-  this.currentPage = n;
-  this.reload();
-}
-goNext(): void { this.goToPage(this.currentPage + 1); }
-goPrev(): void { this.goToPage(this.currentPage - 1); }
-
-setPageSize(size: number): void {
-  if (size === this.pageSize) return;
-  this.pageSize = size;
-  this.currentPage = 1;
-  this.reload();
+startHrAssign(c: Candidate, round: RoundKey): void {
+  this.assignCtx = { candidate: c, round, groupName: ROUNDS[round].assignGroup, needsBusinessUnit: false, picked: null, businessUnit: null };
+  this.assignTargetRound = (round === 'onshoreRound' || round === 'hrRound') ? round : 'hrRound';
 }
 ```
 
-**Also add `this.currentPage = 1;` right before `this.reload()`** inside `setLocation()`, `setTab()`, `onFilterChange()`, `onSearch()`, and `clearFilters()` — otherwise changing a filter while on page 3 could request a page that no longer exists for the new result set.
+You can delete `groupName` from `AssignContext` and the modal entirely if you want — it's now redundant with the live getter above.
 
-## Checklist if it still doesn't appear after pasting this in
+## 3. Toggle behavior — click again to deselect
 
-1. **Is `total` actually being returned by SharePoint?** Open dev tools → Network → find the list request → Payload tab → confirm `$inlinecount=allpages` is present in the query string, and check the Response tab for `d.__count`. If that's missing, `total` stays `0`, `totalPages` becomes `1`, and Next/Previous will look permanently disabled — that's a `sharepoint.service.ts` wiring issue (confirm `getPageByUrl` is reading `res?.d?.__count` from the earlier fix), not a template issue.
-2. **Is `FormsModule` imported** in `dashboard.component.ts`'s standalone `imports` array? `[ngModel]`/`(ngModelChange)` on the `<select>` won't bind without it — you already have it listed from earlier screenshots, just confirming since a missing import silently breaks two-way binding without a console error in some Angular versions.
-3. **Hard refresh / clear cache** — if you're testing in the same tab you've been debugging in for a while, an old compiled bundle can linger.
+This needs the same one-line change everywhere a decision/offer button exists. Pattern: instead of always setting the value, flip to `null` if it's already that value.
 
-Paste back what you see in Network → Response for `__count` if the count/pages still don't show up correctly, and I'll narrow it from there.
+**`tech-round-panel.component.html`:**
+```html
+<button class="selopt neutral-y" [class.on]="r1Decision === Sel" (click)="r1Decision = (r1Decision === Sel ? null : Sel)">✓ Recommended</button>
+<button class="selopt neutral-n" [class.on]="r1Decision === Rej" (click)="r1Decision = (r1Decision === Rej ? null : Rej)">✕ Not Recommended</button>
+<!-- same pattern for r2Decision -->
+```
+
+**`mgmt-round-panel.component.html` / `onshore-round-panel.component.html`:**
+
+```html
+<button class="selopt y" [class.on]="decision === Sel" (click)="decision = (decision === Sel ? null : Sel)">✓ Selected</button>
+<button class="selopt n" [class.on]="decision === Rej" (click)="decision = (decision === Rej ? null : Rej)">✕ Rejected</button>
+```
+
+**`hr-round-panel.component.html`** — same for decision, plus offer fields:
+```html
+<button class="selopt y" [class.on]="decision === Sel" (click)="decision = (decision === Sel ? null : Sel)">✓ Selected</button>
+<button class="selopt n" [class.on]="decision === Rej" (click)="decision = (decision === Rej ? null : Rej)">✕ Rejected</button>
+
+<button class="selopt y" [class.on]="offerSent === 'Yes'" (click)="offerSent = (offerSent === 'Yes' ? null : 'Yes')">Yes</button>
+<button class="selopt n" [class.on]="offerSent === 'No'" (click)="offerSent = (offerSent === 'No' ? null : 'No')">No</button>
+
+<button class="selopt y" [class.on]="offerAccepted === 'Yes'" (click)="offerAccepted = (offerAccepted === 'Yes' ? null : 'Yes')">Yes</button>
+<button class="selopt n" [class.on]="offerAccepted === 'No'" (click)="offerAccepted = (offerAccepted === 'No' ? null : 'No')">No</button>
+```
+
+**Component-side note:** your existing `submit()`/`decision`/`offerSent`/`offerAccepted` types are already `RoundStatus | null` / `YesNo` (`'Yes' | 'No' | null`), so this doesn't need any type change — `null` is already a valid, expected state everywhere. The Save button's `[disabled]="!decision || saving"` already correctly re-disables itself the moment a toggle clears back to `null`, so nothing else breaks.
+
+## 4. Hide offer fields until Selected is chosen (hr-round-panel only)
+
+Wrap the offer-sent/offer-accepted block so it only appears once `decision === Sel`:
+
+```html
+<div class="field">
+  <label>Decision <span class="req">*</span></label>
+  <div class="selector">
+    <button class="selopt y" [class.on]="decision === Sel" (click)="decision = (decision === Sel ? null : Sel)">✓ Selected</button>
+    <button class="selopt n" [class.on]="decision === Rej" (click)="decision = (decision === Rej ? null : Rej)">✕ Rejected</button>
+  </div>
+</div>
+
+<!-- Offer fields only appear once Selected is chosen -->
+<div class="two-col" *ngIf="decision === Sel">
+  <div class="field">
+    <label>Offer sent?</label>
+    <div class="selector" *ngIf="access.canEdit">
+      <button class="selopt y" [class.on]="offerSent === 'Yes'" (click)="offerSent = (offerSent === 'Yes' ? null : 'Yes')">Yes</button>
+      <button class="selopt n" [class.on]="offerSent === 'No'" (click)="offerSent = (offerSent === 'No' ? null : 'No')">No</button>
+    </div>
+    <span class="fb" *ngIf="!access.canEdit">{{ candidate.hrRound.offerSent || '–' }}</span>
+  </div>
+  <div class="field">
+    <label>Offer accepted?</label>
+    <div class="selector" *ngIf="access.canEdit">
+      <button class="selopt y" [class.on]="offerAccepted === 'Yes'" (click)="offerAccepted = (offerAccepted === 'Yes' ? null : 'Yes')">Yes</button>
+      <button class="selopt n" [class.on]="offerAccepted === 'No'" (click)="offerAccepted = (offerAccepted === 'No' ? null : 'No')">No</button>
+    </div>
+    <span class="fb" *ngIf="!access.canEdit">{{ candidate.hrRound.offerAccepted || '–' }}</span>
+  </div>
+</div>
+```
+
+Also worth adding: since offer fields are now hidden when Rejected, clear them in `submit()` so stale values from an earlier Selected→Rejected flip-flop don't silently get saved:
+```typescript
+submit(): void {
+  if (!this.decision || this.saving) return;
+  if (this.decision === this.Rej) {
+    this.offerSent = null;
+    this.offerAccepted = null;
+  }
+  // ...rest of existing submit logic unchanged
+}
+```
+
+Want me to also apply the same "hide until Selected" treatment to the notice text below it ("Answering 'Offer accepted' finalizes this round...") so it doesn't render at all while the fields are hidden?
