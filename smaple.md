@@ -1,133 +1,161 @@
-Good set of catches — these are all real, and #1 and #2 are actually the same root cause, which is worth understanding before you patch it.
+Got it — going through each one precisely, based only on what's actually in your code (not touching anything else).
 
-## 1 & 2. People-picker showing wrong group + HR assignment saving as "Unassigned" — same bug
+## 1. People-picker should search both HR groups
 
-In `dashboard.component.html`'s HR-assign modal, the people-picker is bound like this:
-
-```html
-<app-people-picker [groups]="ROUNDS[assignCtx.round].assignGroup" (picked)="onPicked($event)"></app-people-picker>
-```
-
-But when the candidate's on-shore round hasn't been decided yet, you show a **radio choice** (`assignTargetRound`) letting HR pick *which* round to assign — onshore or HR. The people-picker's `[groups]` binding never looks at that radio value; it's locked to `assignCtx.round` (fixed at the moment the dialog opened) for the entire time the dialog is open. So switching the radio button visually looks like it changes something, but the picker keeps showing whichever group was set initially — that's your bug #1.
-
-Bug #2 is the downstream effect: `confirmHrAssign()`'s `targetPrefix` **does** correctly compute off `assignTargetRound`, but if the picker never actually filtered to the right group, HR could easily end up picking a person from the *wrong* group (e.g. an Onshore panelist while `assignTargetRound` silently says `'hrRound'`) — the field gets written correctly, but to a person who isn't really an HR user, which is why it can look like nothing saved.
-
-**Fix — both the people-picker and the note text need to react live to the radio selection:**
+Wherever HR-assign uses `<app-people-picker>` (create-cohort / dashboard's HR-assign modal), the `[groups]` input needs both HR groups, not just one:
 
 ```html
-<ng-container *ngIf="(assignCtx.round === 'onshoreRound' || assignCtx.round === 'hrRound') && !onshoreDecided(assignCtx.candidate)">
-  <div class="field">
-    <label>Assign to which round?</label>
-    <div class="radio-group">
-      <label class="radio-option">
-        <input type="radio" name="targetRound" value="onshoreRound" [(ngModel)]="assignTargetRound">
-        <span>On-shore round</span>
-      </label>
-      <label class="radio-option">
-        <input type="radio" name="targetRound" value="hrRound" [(ngModel)]="assignTargetRound">
-        <span>HR round</span>
-      </label>
-    </div>
-  </div>
-</ng-container>
-
-<div class="field">
-  <label>Search user</label>
-  <app-people-picker [groups]="ROUNDS[assignTargetRound].assignGroup" (picked)="onPicked($event)"></app-people-picker>
-  <p class="modal-hint">
-    Only members of <b>{{ ROUNDS[assignTargetRound].assignGroup.join(' or ') }}</b> should be chosen.
-  </p>
-</div>
+<app-people-picker [groups]="['HR Cohort Team', 'HR Recruiters']" (picked)="onHrPicked($event)">
+</app-people-picker>
 ```
 
-Key change: **both** the `[groups]` binding and the hint text now read `ROUNDS[assignTargetRound]` instead of `ROUNDS[assignCtx.round]` / the static `assignCtx.groupName`. Since `assignTargetRound` is a plain component property, Angular re-evaluates this on every change detection cycle — so flipping the radio instantly updates which group the picker searches, with no extra code needed in the component.
+Since `PeoplePickerComponent.onInput()` calls `sp.getMembersFromGroups(this.groups)` and that already dedupes by user ID (`getMembersFromGroups` in `sharepoint.service.ts`), passing both group titles is enough — anyone in either group will appear once, no duplicates.
 
-**Also double check `startHrAssign()`** sets a sane default so the picker isn't empty before the user touches the radio:
-```typescript
-startHrAssign(c: Candidate, round: RoundKey): void {
-  this.assignCtx = { candidate: c, round, groupName: ROUNDS[round].assignGroup, needsBusinessUnit: false, picked: null, businessUnit: null };
-  this.assignTargetRound = (round === 'onshoreRound' || round === 'hrRound') ? round : 'hrRound';
-}
-```
+## 2. Cohort filter missing on first load, present after refresh
 
-You can delete `groupName` from `AssignContext` and the modal entirely if you want — it's now redundant with the live getter above.
+Root cause: `DashboardStateService.loadFromSession()` restores `filters.cohort` from sessionStorage — but on a **fresh** load there's no session, so whatever cohort you default-select in the dropdown only updates the local UI, not `state.filters`, before `reload()` fires.
 
-## 3. Toggle behavior — click again to deselect
+Fix — in `DashboardComponent.ngOnInit()` (or wherever you pick the default/latest cohort), make sure the cohort is written into state **before** the first `reload()` call:
 
-This needs the same one-line change everywhere a decision/offer button exists. Pattern: instead of always setting the value, flip to `null` if it's already that value.
+```ts
+ngOnInit(): void {
+  this.state.loadFromSession();
+  const s = this.state.get();
+  this.location = s.location;
+  this.tab = s.tab;
+  this.selectedCohort = s.selectedCohort;
 
-**`tech-round-panel.component.html`:**
-```html
-<button class="selopt neutral-y" [class.on]="r1Decision === Sel" (click)="r1Decision = (r1Decision === Sel ? null : Sel)">✓ Recommended</button>
-<button class="selopt neutral-n" [class.on]="r1Decision === Rej" (click)="r1Decision = (r1Decision === Rej ? null : Rej)">✕ Not Recommended</button>
-<!-- same pattern for r2Decision -->
-```
-
-**`mgmt-round-panel.component.html` / `onshore-round-panel.component.html`:**
-
-```html
-<button class="selopt y" [class.on]="decision === Sel" (click)="decision = (decision === Sel ? null : Sel)">✓ Selected</button>
-<button class="selopt n" [class.on]="decision === Rej" (click)="decision = (decision === Rej ? null : Rej)">✕ Rejected</button>
-```
-
-**`hr-round-panel.component.html`** — same for decision, plus offer fields:
-```html
-<button class="selopt y" [class.on]="decision === Sel" (click)="decision = (decision === Sel ? null : Sel)">✓ Selected</button>
-<button class="selopt n" [class.on]="decision === Rej" (click)="decision = (decision === Rej ? null : Rej)">✕ Rejected</button>
-
-<button class="selopt y" [class.on]="offerSent === 'Yes'" (click)="offerSent = (offerSent === 'Yes' ? null : 'Yes')">Yes</button>
-<button class="selopt n" [class.on]="offerSent === 'No'" (click)="offerSent = (offerSent === 'No' ? null : 'No')">No</button>
-
-<button class="selopt y" [class.on]="offerAccepted === 'Yes'" (click)="offerAccepted = (offerAccepted === 'Yes' ? null : 'Yes')">Yes</button>
-<button class="selopt n" [class.on]="offerAccepted === 'No'" (click)="offerAccepted = (offerAccepted === 'No' ? null : 'No')">No</button>
-```
-
-**Component-side note:** your existing `submit()`/`decision`/`offerSent`/`offerAccepted` types are already `RoundStatus | null` / `YesNo` (`'Yes' | 'No' | null`), so this doesn't need any type change — `null` is already a valid, expected state everywhere. The Save button's `[disabled]="!decision || saving"` already correctly re-disables itself the moment a toggle clears back to `null`, so nothing else breaks.
-
-## 4. Hide offer fields until Selected is chosen (hr-round-panel only)
-
-Wrap the offer-sent/offer-accepted block so it only appears once `decision === Sel`:
-
-```html
-<div class="field">
-  <label>Decision <span class="req">*</span></label>
-  <div class="selector">
-    <button class="selopt y" [class.on]="decision === Sel" (click)="decision = (decision === Sel ? null : Sel)">✓ Selected</button>
-    <button class="selopt n" [class.on]="decision === Rej" (click)="decision = (decision === Rej ? null : Rej)">✕ Rejected</button>
-  </div>
-</div>
-
-<!-- Offer fields only appear once Selected is chosen -->
-<div class="two-col" *ngIf="decision === Sel">
-  <div class="field">
-    <label>Offer sent?</label>
-    <div class="selector" *ngIf="access.canEdit">
-      <button class="selopt y" [class.on]="offerSent === 'Yes'" (click)="offerSent = (offerSent === 'Yes' ? null : 'Yes')">Yes</button>
-      <button class="selopt n" [class.on]="offerSent === 'No'" (click)="offerSent = (offerSent === 'No' ? null : 'No')">No</button>
-    </div>
-    <span class="fb" *ngIf="!access.canEdit">{{ candidate.hrRound.offerSent || '–' }}</span>
-  </div>
-  <div class="field">
-    <label>Offer accepted?</label>
-    <div class="selector" *ngIf="access.canEdit">
-      <button class="selopt y" [class.on]="offerAccepted === 'Yes'" (click)="offerAccepted = (offerAccepted === 'Yes' ? null : 'Yes')">Yes</button>
-      <button class="selopt n" [class.on]="offerAccepted === 'No'" (click)="offerAccepted = (offerAccepted === 'No' ? null : 'No')">No</button>
-    </div>
-    <span class="fb" *ngIf="!access.canEdit">{{ candidate.hrRound.offerAccepted || '–' }}</span>
-  </div>
-</div>
-```
-
-Also worth adding: since offer fields are now hidden when Rejected, clear them in `submit()` so stale values from an earlier Selected→Rejected flip-flop don't silently get saved:
-```typescript
-submit(): void {
-  if (!this.decision || this.saving) return;
-  if (this.decision === this.Rej) {
-    this.offerSent = null;
-    this.offerAccepted = null;
+  if (!this.selectedCohort) {
+    this.lookups.activeCohorts().subscribe(cohorts => {
+      if (cohorts.length) {
+        this.selectedCohort = cohorts[0].title;
+        this.state.setCohort(this.selectedCohort); // ← write to state FIRST
+      }
+      this.reload(); // ← then reload
+    });
+  } else {
+    this.reload();
   }
-  // ...rest of existing submit logic unchanged
 }
 ```
 
-Want me to also apply the same "hide until Selected" treatment to the notice text below it ("Answering 'Offer accepted' finalizes this round...") so it doesn't render at all while the fields are hidden?
+The key rule: **never call `reload()` before `state.setCohort()`/`state.set()` has run** for whatever cohort ends up selected — that's exactly what refresh does correctly (session loads before reload) and first-load was skipping.
+
+## 3. Stray dot when role/profile missing
+
+In `candidate-detail.component.html`, the `hero-meta` line:
+
+```html
+<span>{{ candidate.location }}</span>
+<span class="separator"> · </span>
+<span>{{ candidate.roleDesignation }}</span>
+```
+
+The separator here is unconditional. Fix, matching the pattern you already use for the profile separator:
+
+```html
+<span>{{ candidate.location }}</span>
+<span class="separator" *ngIf="candidate.roleDesignation"> · </span>
+<span *ngIf="candidate.roleDesignation">{{ candidate.roleDesignation }}</span>
+<span class="separator" *ngIf="candidate.roleDesignation && candidate.profile"> · </span>
+<span *ngIf="candidate.profile">{{ candidate.profile }}</span>
+```
+
+Now the dot only appears when there's actually a role to show.
+
+## 4. MaxMarks in brackets after skill label
+
+**`candidate.model.ts`** — add to `SkillRow`:
+```ts
+export interface SkillRow {
+  label: string;
+  slotIndex: number;
+  screeningScore: string;
+  round1Comment: string;
+  round2Comment: string;
+  maxMarks?: number; // NEW
+}
+```
+
+**`lookup.service.ts`** — `skillsForType()` currently selects `['SkillValue', 'SkillOrder']`. Add the field and return it:
+```ts
+export interface InterviewSkill { value: string; order: number; maxMarks: number; }
+
+skillsForType(interviewType: string): Observable<InterviewSkill[]> {
+  ...
+  const obs = this.sp
+    .getAll<any>(LISTS.interviewSkills, {
+      select: ['SkillValue', 'SkillOrder', 'MaxMarks'],
+      filter: `Title eq '${safe}'`,
+      orderby: 'SkillOrder asc',
+      top: 100,
+    })
+    .pipe(
+      map(items => items
+        .sort((a, b) => (a.SkillOrder ?? 0) - (b.SkillOrder ?? 0))
+        .map(i => ({ value: i.SkillValue, order: i.SkillOrder, maxMarks: i.MaxMarks }))),
+      shareReplay(1),
+    );
+  ...
+}
+```
+
+This changes the return type from `Observable<string[]>` to `Observable<InterviewSkill[]>` — you'll need to update `interviewTypes()`/callers accordingly, or add a **new** method (e.g. `skillsForTypeDetailed`) if `skillsForType()` is used elsewhere expecting plain strings, to avoid breaking other call sites.
+
+**`candidate-detail.component.ts`** — `attachSkillLabels()`:
+```ts
+private attachSkillLabels(candidate: Candidate): void {
+  this.lookups.skillsForType(candidate.interviewType).subscribe({
+    next: skills => {
+      candidate.skills = candidate.skills
+        .map((slot, i) => ({ ...slot, label: skills[i]?.value ?? '', maxMarks: skills[i]?.maxMarks }))
+        .filter(slot => !!slot.label);
+      this.candidate = candidate;
+      this.loading = false;
+    },
+    ...
+  });
+}
+```
+
+**`tech-round-panel.component.html`** — wherever `s.label` is rendered as the skill name:
+
+```html
+<b>{{ s.label }}<span *ngIf="s.maxMarks"> (Max {{ s.maxMarks }})</span></b>
+```
+→ `Core Java & JDK 21+ (Max 14)`
+
+## 5. Mgmt panel shouldn't get "assign to me" inside Tech Round 2
+
+The cause: `cohort.config.ts` → `ROUNDS.techRound2.selfAssign` currently includes **both** `'TechPanel'` and `'MgmtPanel'`. That's what makes `WorkflowService.getAccess(candidate, 'techRound2')` return `'assignable'` for a Mgmt viewer, which surfaces the "Assign to me" CTA inside `tech-round-panel.component.html` — that CTA calls `TechRoundPanelComponent.assignToMe('techRound2')`, which just assigns you as the *tech* interviewer, not the skip-and-take-mgmt-round behavior you want.
+
+**Fix — `cohort.config.ts`:**
+```ts
+export const ROUNDS: Record<RoundKey, { prefix: string; name: string; selfAssign: UserRole[]; assignGroup: string[] }> = {
+  techRound1:  { prefix: 'TechRound1',  name: 'Tech Round 1',    selfAssign: ['TechPanel'],  assignGroup: ['Tech Interview Panel'] },
+  techRound2:  { prefix: 'TechRound2',  name: 'Tech Round 2',    selfAssign: ['TechPanel'],  assignGroup: ['Tech Interview Panel', 'Mgmt Interview Panel'] }, // ← removed 'MgmtPanel'
+  mgmtRound:   { prefix: 'MgmtRound',   name: 'Management Round',selfAssign: ['MgmtPanel'],  assignGroup: ['Mgmt Interview Panel'] },
+  onshoreRound:{ prefix: 'OnShoreRound',name: 'Onshore Round',   selfAssign: [],             assignGroup: ['On Shore Interview Panel', 'HR Cohort Team'] },
+  hrRound:     { prefix: 'HrRound',     name: 'HR Round',        selfAssign: [],             assignGroup: ['HR Cohort Team'] },
+};
+```
+
+`assignGroup` stays as-is (that's for HR's assign-dialog picker, unrelated to self-assign) — only `selfAssign` on `techRound2` loses `'MgmtPanel'`.
+
+This means a Mgmt viewer's `r2` access on the tech panel will no longer be `'assignable'` — it'll fall through to whatever your `getAccess` returns for a role that can view but not self-assign (likely `'not-reached'`/`'readonly'` depending on your exact `getAccess` branching, which I haven't seen in full — check that function returns something sensible like `readonly`/`no-cta` there rather than accidentally `no-access`, since Mgmt still needs to *see* tech round 2 status).
+
+**Then, in `mgmt-round-panel.component.html`**, wherever the "assignable" notice for mgmt round is shown (same pattern as onshore's `notice muted`), add the skip warning:
+
+```html
+<div class="notice info" *ngIf="access.state === 'assignable'">
+  Assigning yourself to the Management Round
+  <span *ngIf="candidate.techRound2.selection === 'Pending'"> will mark <b>Tech Round 2 as Not Applicable</b> and</span>
+  will make you the interviewer for this round.
+</div>
+```
+
+This keeps the existing correct auto-skip logic in `MgmtRoundPanelComponent.assignToMe()` exactly as-is — you don't need to touch that method — you're just removing the competing entry point in the tech panel and telling the mgmt user upfront what claiming the round will do.
+
+---
+
+That covers all five as concrete, isolated edits — nothing else in the app touched. Let me know once you've made them and I'll help verify, or if you want to paste the actual `WorkflowService.getAccess()` body so I can confirm exactly what state Mgmt will land on for tech round 2 after the config change.
