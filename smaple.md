@@ -1,138 +1,56 @@
-Fair — "Load more" (infinite append) and true **page-by-page navigation** are different UX, and the "15 of 0 shown" is a separate bug on top of that. Let me fix both.
+This lines up exactly with the bug we found earlier — the `StatusCode` Edm.String error is very likely still biting you here, just showing up in a different place: **the UI not refreshing after assignment**, not the assignment itself failing.
 
-## Why "15 of 0 shown"
+**What's actually happening**
 
-`total` is initialized to `0` and only gets overwritten inside `next: page => { this.total = page.total ?? ... }`. If the request errored (which it was, from the `NaN` `$top` bug) or `page.total` came back `undefined` and the `??` fallback didn't fire correctly, `total` never updates from its initial `0` — while `rows` still holds whatever was last successfully loaded. That mismatch is exactly "15 of 0". Once the pagination fix below is in, this resolves itself, but I'm adding a safety fallback regardless.
-
-## Redesigning to real Next/Previous pages
-
-SharePoint's REST API only gives you a **forward** skip-token (`__next`) — there's no server-side "previous page" link. So Previous has to be done by **caching the page URLs you've already visited** and re-fetching (or replaying) from that history, not by asking the server to go backward.
-
-**`dashboard.component.ts`** — replace `loadMore()`/`nextUrl` entirely with a page-history stack:
+Look at `assignToMe()` in `mgmt-round-panel.component.ts`:
 
 ```typescript
-pageSize = 25;
-total = 0;
-currentPage = 1;
-private pageUrlHistory: (string | null)[] = [null]; // index 0 = first page (no url needed)
-private nextUrl: string | null = null;
+this.candidates.submitRound(this.candidate, fields).subscribe(() => {
+  this.candidate.mgmtRound.interviewedBy = user;
+  if (skippingT2) this.candidate.techRound2.selection = RoundStatus.NotApplicable;
+  this.candidates.patchStatus(this.candidate).subscribe(() => this.ngOnChanges());
+});
+```
 
-private reload(): void {
-  this.loading = true;
-  this.error = '';
-  this.rows = [];
-  this.nextUrl = null;
-  this.currentPage = 1;
-  this.pageUrlHistory = [null];
+The local `interviewedBy` mutation happens fine — so the candidate object in memory (and in SharePoint) genuinely does say "assigned to you." But `ngOnChanges()` — the thing that recomputes `this.access` (the object your template reads `state`/`canEdit`/`assignedToName` from) — is **nested inside `patchStatus()`'s success callback**, with no error handler.
 
-  const roles = this.currentUser.get().roles;
+If `patchStatus()` throws (the `StatusCode` type-mismatch bug), that inner subscribe's `next` callback never fires — so `ngOnChanges()` never runs. Your `access` object stays exactly as it was *before* you assigned yourself: still showing "assignable"/locked-for-me, even though `interviewedBy` is now correctly set underneath it. That's precisely "locked for others, but I can't edit it either" — the UI simply never refreshed to reflect the assignment that did succeed.
 
-  if (this.tab === null) {
-    const active$ = this.candidates.getActivePage(this.location, this.filters, roles, this.pageSize);
-    const rejected$ = this.candidates.getRejectedPage(this.location, this.filters, roles, this.pageSize);
-    forkJoin([active$, rejected$]).subscribe({
-      next: ([actPage, rejPage]) => {
-        this.rows = [...actPage.items, ...rejPage.items];
-        this.total = (actPage.total ?? 0) + (rejPage.total ?? 0);
-        this.nextUrl = null; // combined view has no "next" concept
-        this.loading = false;
-      },
-      error: err => { this.loading = false; this.error = this.humanError(err); this.total = 0; },
-    });
-    return;
+**The fix — two parts**
+
+1. **Confirm `StatusCode` is a true Number column** (from the earlier fix) — if it's still Text, `patchStatus()` will keep silently failing everywhere, not just here.
+
+2. **Decouple the UI refresh from `patchStatus()` success** — `ngOnChanges()` should run regardless of whether the status patch succeeds, since the round data itself already changed locally and in SharePoint:
+
+```typescript
+assignToMe(): void {
+  const me = this.currentUser.get();
+  const user: SharePointUser = { id: me.id, title: me.title, email: me.email };
+  const mgmtPrefix = ROUNDS.mgmtRound.prefix;
+
+  const fields: Record<string, any> = {
+    [`${mgmtPrefix}InterviewedById`]: me.id,
+  };
+  const skippingT2 = this.candidate.techRound2.selection === RoundStatus.Pending;
+  if (skippingT2) {
+    fields[`${ROUNDS.techRound2.prefix}InterviewSelection`] = RoundStatus.NotApplicable;
   }
 
-  const source$ = this.tab === 'active'
-    ? this.candidates.getActivePage(this.location, this.filters, roles, this.pageSize)
-    : this.candidates.getRejectedPage(this.location, this.filters, roles, this.pageSize);
+  this.candidates.submitRound(this.candidate, fields).subscribe({
+    next: () => {
+      this.candidate.mgmtRound.interviewedBy = user;
+      if (skippingT2) this.candidate.techRound2.selection = RoundStatus.NotApplicable;
 
-  source$.subscribe({
-    next: page => {
-      this.rows = page.items;
-      this.nextUrl = page.nextUrl;
-      this.total = page.total ?? 0;
-      this.loading = false;
+      this.ngOnChanges();   // FIXED — always refresh access immediately, don't wait on patchStatus
+
+      this.candidates.patchStatus(this.candidate).subscribe({
+        next: () => {},   // status column write is secondary; access already reflects reality
+        error: err => console.error('patchStatus failed after assignToMe', err),
+      });
     },
-    error: err => { this.loading = false; this.error = this.humanError(err); this.total = 0; },
+    error: err => console.error('submitRound failed in assignToMe', err),
   });
-}
-
-get canGoNext(): boolean { return !!this.nextUrl && !this.loading; }
-get canGoPrev(): boolean { return this.currentPage > 1 && !this.loading; }
-
-get pageStart(): number { return this.rows.length ? (this.currentPage - 1) * this.pageSize + 1 : 0; }
-get pageEnd(): number { return (this.currentPage - 1) * this.pageSize + this.rows.length; }
-
-goNext(): void {
-  if (!this.nextUrl) return;
-  this.loading = true;
-  this.candidates.getNextPage(this.nextUrl, this.location).subscribe({
-    next: page => {
-      this.pageUrlHistory.push(this.nextUrl); // remember the URL that GOT us to this new page
-      this.currentPage++;
-      this.rows = page.items;
-      this.nextUrl = page.nextUrl;
-      if (page.total != null) this.total = page.total;
-      this.loading = false;
-    },
-    error: err => { this.loading = false; this.error = this.humanError(err); },
-  });
-}
-
-goPrev(): void {
-  if (this.currentPage <= 1) return;
-  this.loading = true;
-  this.currentPage--;
-  const targetUrl = this.pageUrlHistory[this.currentPage - 1]; // null = re-run the original first-page query
-
-  const request$ = targetUrl
-    ? this.candidates.getNextPage(targetUrl, this.location)
-    : (this.tab === 'active'
-        ? this.candidates.getActivePage(this.location, this.filters, this.currentUser.get().roles, this.pageSize)
-        : this.candidates.getRejectedPage(this.location, this.filters, this.currentUser.get().roles, this.pageSize));
-
-  request$.subscribe({
-    next: page => {
-      this.rows = page.items;
-      this.nextUrl = page.nextUrl;
-      if (page.total != null) this.total = page.total;
-      this.pageUrlHistory = this.pageUrlHistory.slice(0, this.currentPage); // trim any forward history past here
-      this.loading = false;
-    },
-    error: err => { this.loading = false; this.error = this.humanError(err); },
-  });
-}
-
-setPageSize(size: number): void {
-  if (size === this.pageSize) return;
-  this.pageSize = size;
-  this.reload(); // always resets to page 1 with the new size — the only sane behavior
 }
 ```
 
-**`dashboard.component.html`** — replace the old footer:
-
-```html
-<div class="card-foot">
-  <span class="dim small">{{ pageStart }}–{{ pageEnd }} of {{ total }} shown</span>
-
-  <select class="filter" [ngModel]="pageSize" (ngModelChange)="setPageSize($event)">
-    <option [ngValue]="10">10</option>
-    <option [ngValue]="25">25</option>
-    <option [ngValue]="50">50</option>
-    <option [ngValue]="100">100</option>
-  </select>
-
-  <span class="dim small" *ngIf="loading">Loading…</span>
-
-  <div class="page-nav">
-    <button class="btn ghost sm" [disabled]="!canGoPrev" (click)="goPrev()">← Previous</button>
-    <span class="dim small">Page {{ currentPage }}</span>
-    <button class="btn ghost sm" [disabled]="!canGoNext" (click)="goNext()">Next →</button>
-  </div>
-</div>
-```
-
-**Why Previous re-fetches instead of just replaying cached rows in memory:** I could cache each page's actual `items` array too (not just the URL) so Previous is instant with zero network call — that's a nice upgrade if you want it, since a manager going back and forth doesn't need a fresh SharePoint round-trip each time. Say the word and I'll add an in-memory `pageCache: Candidate[][]` alongside the URL history so `goPrev()` just reads from cache instead of calling `getNextPage`/`getActivePage` again — only `goNext()` into brand-new territory would hit the network.
-
-One caveat worth flagging: since filters/search/tab changes all call `reload()` (which resets `pageUrlHistory` to `[null]`), Previous only ever needs to go back within the *current* filter set — that's correct and matches how every paginated table works, just confirming it's intentional and not a gap.
+**This same coupling bug needs the identical fix in every other self-assign/unassign flow** — `tech-round-panel.component.ts`'s `assignToMe()`, and `dashboard.component.ts`'s `confirmSelfAssign()` / `confirmHrAssign()` / `confirmUnassign()` — anywhere `ngOnChanges()` (panels) or `reload()` (dashboard) is nested inside `patchStatus()`'s success callback rather than called unconditionally right after the local mutation. Want me to go through those four and rewrite each with the same "mutate → refresh UI → patch status independently" ordering?
