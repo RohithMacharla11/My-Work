@@ -1,67 +1,60 @@
-Good — and noted: I will **not** touch `pipeCells()`, `getNodeState()`, `getLineState()`, or the dashboard table's pipeline dots. That stays exactly as it is; my earlier suggestion is withdrawn.
+Good catches, both scoped precisely to what you meant.
 
-## Fix: hide the Tech Round 2 column in the candidate-detail feedback table until Tech 1 is decided
+## Fix 1 — Tech Round 2 picker should only show Tech Interview Panel
 
-This is entirely inside `tech-round-panel.component.html` and `tech-round-panel.component.ts` — the same file you saw the skill/feedback grid in on the candidate-detail page. It's a completely separate template from the dashboard, so this change can't touch the pipeline dots you want left alone.
+You're right — my earlier `pickerGroups()` only stripped "Mgmt Interview Panel" from the picker for the *mandatory* case (Tech 1 rejected). But once you deliberately pick the **"Tech Round 2"** radio option (as opposed to "Management Round"), the intent is unambiguous — you want a Tech reviewer, full stop, regardless of whether Tech 1 was passed or rejected. The "Management Round" radio choice is what should surface Mgmt Interview Panel members — and it already does that correctly on its own, since it maps straight to `ROUNDS.mgmtRound.assignGroup = ['Mgmt Interview Panel']`.
 
-**`tech-round-panel.component.ts`** — add one small getter:
+**`dashboard.component.ts`** — simplify the condition so it always applies to the `techRound2` target, not just the mandatory case:
+
 ```ts
-get showTechRound2Column(): boolean {
-  return this.candidate.techRound1.selection !== RoundStatus.Pending;
+pickerGroups(): string[] {
+  const ctx = this.assignCtx;
+  if (!ctx) return [];
+  const target = this.assignTargetRound;
+  if (target === 'techRound2') {
+    return ROUNDS.techRound2.assignGroup.filter(g => g !== 'Mgmt Interview Panel');
+  }
+  return ROUNDS[target].assignGroup;
 }
 ```
-(`RoundStatus` is already imported in this file, so no new import needed.)
+Everything else — the radio itself, `Management Round` target resolution, onshore/HR handling — is untouched.
 
-**`tech-round-panel.component.html`** — add `*ngIf="showTechRound2Column"` to the Tech Round 2 header cell and to its three matching body cells (skill rows, overall-comment row, decision row). Nothing about the Tech Round 1 column, or anything inside it, changes.
+## Fix 2 — Tech Round 1 should fill the row when Tech Round 2 is hidden
+
+I don't have visibility into your actual `round-panel.shared.scss`, so rather than guess at whatever percentage-width rules are in there (and risk breaking the two-column layout once Tech 2 reappears), I'll use plain HTML `colspan` — it's layout-engine agnostic, works identically whether the table uses fixed or auto layout, and needs zero CSS changes.
+
+**`tech-round-panel.component.html`** — add one attribute binding to each of Tech Round 1's four cells (header, per-skill row, overall-comment row, decision row). Tech Round 2's cells keep their existing `*ngIf="showTechRound2Column"` exactly as before — nothing about them changes.
 
 Header:
 ```html
-<th class="col-round" *ngIf="showTechRound2Column">
-  <div class="round-head">
-    <b>Tech Round 2</b>
-    <!-- ...unchanged chips/state markup... -->
-  </div>
-  <!-- ...unchanged small/date markup... -->
+<th class="col-round" [attr.colspan]="showTechRound2Column ? 1 : 2">
+  <!-- ...unchanged Tech Round 1 header markup... -->
 </th>
 ```
 
-Per-skill row (inside `*ngFor="let s of candidate.skills; let i = index"`):
+Per-skill row cell:
 ```html
-<td class="col-round" *ngIf="showTechRound2Column">
-  <!-- ...unchanged R2 comment textarea / fb / dim markup... -->
+<td class="col-round" [attr.colspan]="showTechRound2Column ? 1 : 2">
+  <!-- ...unchanged R1 comment textarea markup... -->
 </td>
 ```
 
-Overall-comment row:
+Overall-comment row cell:
 ```html
-<td class="col-round" *ngIf="showTechRound2Column">
-  <!-- ...unchanged r2Overall textarea / feedback markup... -->
+<td class="col-round" [attr.colspan]="showTechRound2Column ? 1 : 2">
+  <!-- ...unchanged r1Overall textarea markup... -->
 </td>
 ```
 
-Decision row:
+Decision row cell:
 ```html
-<td class="col-round" *ngIf="showTechRound2Column">
-  <!-- ...unchanged r2Decision selector markup... -->
+<td class="col-round" [attr.colspan]="showTechRound2Column ? 1 : 2">
+  <!-- ...unchanged r1Decision selector markup... -->
 </td>
 ```
 
-Once `techRound1.selection` moves to `Selected` (recommended) or `Rejected` (not recommended) — i.e. exactly when the status becomes `PendingTech2OrMgmt` or the new `PendingTech2` — the column reappears automatically and both tables show side by side, same as today. While it's `Pending`, only the Tech Round 1 column renders, so it naturally takes the full row.
+With `colspan="2"`, Tech Round 1's cell physically occupies the space of both round columns whenever Tech Round 2 is hidden — no gap on the right, no dependence on whatever width rules your SCSS already has. The moment `showTechRound2Column` flips back to `true` (Tech 1 gets decided), `colspan` drops back to `1`, Tech Round 2's `*ngIf` cells re-enter the DOM, and you're back to the exact two-column layout you have today.
 
-The "assign CTA" footer block (Tech Round 2 "unassigned, assign to me" notice) further down the same file is unaffected — it's already independently gated by `r2.state === 'assignable'`, which can't be true while Tech 1 hasn't been decided anyway (Tech Round 2 isn't reachable yet at that point).
+I've logged both fixes to memory.
 
-## On the status still showing "Pending with Tech Round 2 or Management Round" after a rejection
-
-This is the exact behavior the `PendingTech2` split was meant to fix, so if you're still seeing the old combined label after rejecting Tech Round 1, it most likely means the `computeStatus()` edit from last time hasn't landed in your actual file yet (I can only hand you the diff — I don't have write access to your repo). Two things worth double-checking on your end:
-
-1. In `workflow.service.ts`, confirm `computeStatus()` now has:
-   ```ts
-   if (tech2 === 'Pending') {
-     return c.techRound1.selection === 'Rejected'
-       ? WorkflowStatus.PendingTech2
-       : WorkflowStatus.PendingTech2OrMgmt;
-   }
-   ```
-2. Remember this only takes effect **at the moment a round is submitted** — `patchStatus()` (which calls `computeStatus()`) only runs right after a `submitRound()` call, not continuously. So if you're looking at a candidate who was already sitting at "PendingTech2OrMgmt" from before you rejected them, the label only refreshes once you submit Tech Round 1 as Not Recommended (or any other round) again for that candidate — it won't silently update on its own for existing untouched records.
-
-If you've confirmed both of those and it's still showing the old label, tell me and I'll dig into whether something else is reading/caching the status separately.
+Let me know how it renders — and whether the "Not Recommended" status label is now flipping to `PendingTech2` correctly once you resubmit a rejected Tech Round 1.
