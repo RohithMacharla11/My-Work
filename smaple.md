@@ -1,82 +1,80 @@
-Understood — logic first, CSS later. This one needs a bit of care though, because it changes something that's currently a *shared* function (`buildStatusFilter`) used by every single role's dashboard query — so let me walk through exactly how I've scoped it to touch only OnshorePanel.
+Good — this one's simpler and doesn't cross role/query boundaries, so it's a clean, contained change. Let me confirm what I checked first: **the HR round panel has no "overall comment" field at all** (its state is just `decision`, `offerSent`, `offerAccepted`) — so nothing to change there. The other four fields you want mandatory live in Tech Round 1, Tech Round 2, Management Round, and Onshore Round.
 
-## What's happening today
+Also worth noting: the Onshore panel's "Overall feedback" label already *shows* a required asterisk (`<span class="req" *ngIf="access.canEdit">*</span>`) — but nothing was actually enforcing it before submission. So part of this fix is making that visual promise real, not just adding it fresh everywhere.
 
-`OnshorePanel` currently inherits the general "hierarchy" visibility rule that every role uses: `ROLE_STATUS_MAP.OnshorePanel` includes the *entire cascade* — `PendingTech1`, `PendingTech2`, `PendingTech2OrMgmt`, `PendingMgmt`, `PendingOnshoreOrHR`, `PendingOnshore` — so an Onshore panel member currently sees every candidate from Tech Round 1 onward, not just the ones actually at their stage. And there's no assignee check anywhere in the query at all — status match alone is enough to show a row, regardless of who (if anyone) is assigned to the Onshore round.
+## Tech Round 1 & 2 — `tech-round-panel.component.ts`
 
-You want OnshorePanel specifically narrowed to: **only the onshore-pending status, and only when the Onshore round is assigned to that exact user.**
-
-One heads-up before the fix: I traced `computeStatus()` carefully, and it never actually assigns the standalone `PendingOnshore` status to a candidate — when the onshore round is genuinely pending, the status that gets written is `PendingOnshoreOrHR`. So the fix below matches against `PendingOnshoreOrHR`, since that's what your onshore-pending candidates actually carry. Flagging this so you can confirm it lines up with what you're seeing in your SharePoint `StatusCode` column.
-
-## The fix — scoped entirely to OnshorePanel
-
-**`odata-filter.service.ts`** — `buildStatusFilter()` gets one new optional parameter and OnshorePanel is pulled out of the shared "union of allowed statuses" loop into its own AND-scoped clause:
+`submit()` currently only blocks on a missing decision. Add the overall-comment check (the `overall` variable already exists a few lines down — just hoist it above the guard):
 
 ```ts
-export function buildStatusFilter(
-  roles: UserRole[],
-  tab: 'active' | 'rejected' | null,
-  meId?: number,   // NEW — only used for OnshorePanel's own-assignment restriction
-): string {
-  const rejectedCode = STATUS_CODE[WorkflowStatus.Rejected];
-  const isPower = roles.some(r => POWER_ROLES.includes(r));
+submit(round: TechKey, adminMode = false): void {
+  const access = this.access(round);
+  const decision = round === 'techRound1' ? this.r1Decision : this.r2Decision;
+  const overall = round === 'techRound1' ? this.r1Overall : this.r2Overall;
 
-  if (tab === 'rejected') return `StatusCode eq ${rejectedCode}`;
+  if (!adminMode && (!decision || !access.canEditDecision || !overall.trim())) return;
+  if (this.saving) return;
 
-  if (isPower) {
-    return tab === 'active' ? `StatusCode ne ${rejectedCode}` : '';
-  }
-
-  const clauses: string[] = [];
-
-  // Every role except OnshorePanel keeps the exact existing behavior — the union of
-  // whatever statuses ROLE_STATUS_MAP allows for that role, unchanged.
-  const nonOnshoreRoles = roles.filter(r => r !== 'OnshorePanel');
-  const allowed = new Set<number>();
-  for (const role of nonOnshoreRoles) {
-    (ROLE_STATUS_MAP[role] ?? []).forEach(s => {
-      if (tab === 'active' && s === WorkflowStatus.Rejected) return;
-      allowed.add(STATUS_CODE[s]);
-    });
-  }
-  allowed.forEach(c => clauses.push(`StatusCode eq ${c}`));
-
-  // OnshorePanel: only the onshore-pending status, and only rows assigned to this user.
-  if (roles.includes('OnshorePanel') && meId != null) {
-    const onshoreCode = STATUS_CODE[WorkflowStatus.PendingOnshoreOrHR];
-    clauses.push(`(StatusCode eq ${onshoreCode} and OnShoreRoundInterviewedById eq ${meId})`);
-  }
-
-  if (clauses.length === 0) return 'StatusCode eq -1';
-  return clauses.length > 1 ? `(${clauses.join(' or ')})` : clauses[0];
+  const comments = round === 'techRound1' ? this.r1Comments : this.r2Comments;
+  // ...rest of the method unchanged (no more `const overall = ...` line lower down — it's already declared above now)
 }
 ```
 
-**`candidate.service.ts`** — the two call sites (`queryFor()` and `getCount()`, which must stay in sync so the pagination total matches the actual rows) need to pass the current user's id through:
+**`tech-round-panel.component.html`** — submit buttons and the overall label:
+```html
+<button class="btn primary" *ngIf="r1.canEditDecision" [disabled]="!r1Decision || !r1Overall.trim() || saving" (click)="submit('techRound1')">Submit Tech Round 1</button>
+<button class="btn primary" *ngIf="r2.canEditDecision" [disabled]="!r2Decision || !r2Overall.trim() || saving" (click)="submit('techRound2')">Submit Tech Round 2</button>
+```
+
+```html
+<td class="col-skill"><b>Overall comment <span class="req">*</span></b></td>
+```
+The **admin "Save (Admin)" buttons stay exactly as they are** (`[disabled]="saving"` only) — same as how they already bypass the decision requirement, admin overrides intentionally aren't blocked by mandatory-field checks.
+
+## Onshore Round — `onshore-round-panel.component.ts`
 
 ```ts
-private queryFor(tab, filters, location, roles, pageSize): ListQuery {
-  const meId = this.currentUser.get().id;
-  const statusClause = buildStatusFilter(roles, tab, meId);   // was: buildStatusFilter(roles, tab)
+submit(adminMode = false): void {
+  if (this.saving) return;
+  if (!adminMode && (!this.decision || !this.access.canEditDecision || !this.overall.trim())) return;
   // ...rest unchanged
 }
+```
+**`onshore-round-panel.component.html`** — just the submit button (the required asterisk on the label is already there):
+```html
+<button class="btn primary" *ngIf="access.canEditDecision" [disabled]="!decision || !overall.trim() || saving" (click)="submit()">Submit round</button>
+```
 
-getCount(tab, location, filters, roles): Observable<number> {
-  const meId = this.currentUser.get().id;
-  const statusClause = buildStatusFilter(roles, tab, meId);   // was: buildStatusFilter(roles, tab)
+## Management Round — `mgmt-round-panel.component.ts`
+
+This is the one with the extra requirement — every skill/topic row (Justification, Constraints, Potential Opportunities, Points of Attention, etc.) needs a comment, not just the overall field:
+
+```ts
+get allTopicsFilled(): boolean {
+  return this.rows.every(r => !!r.comment && r.comment.trim().length > 0);
+}
+
+submit(adminMode = false): void {
+  if (this.saving) return;
+  if (!adminMode && (!this.decision || !this.access.canEditDecision || !this.overall.trim() || !this.allTopicsFilled)) return;
   // ...rest unchanged
 }
 ```
 
-## Why every other role is unaffected
+**`mgmt-round-panel.component.html`** — submit button, plus asterisks on each topic row and the overall row:
+```html
+<button class="btn primary" *ngIf="access.canEditDecision" [disabled]="!decision || !overall.trim() || !allTopicsFilled || saving" (click)="submit()">Submit round</button>
+```
 
-- **HrAdmin/Recruiter**: the `isPower` branch returns before either the union loop or the Onshore-specific block ever runs — completely untouched, still see everything.
-- **TechPanel / MgmtPanel alone**: `nonOnshoreRoles` still contains them (nothing's filtered out), so the union-of-statuses loop runs identically to before and produces the same clause string, character for character.
-- **A user who holds OnshorePanel *and* another role** (like the `Management Panel · Technical Panel` combo I saw in your screenshot) — their Tech/Mgmt visibility stays exactly as it was; only the portion of the query contributed by OnshorePanel gets the new restrictive `(status AND assigned-to-me)` clause, OR'd alongside their other role's normal clause. So a hybrid user doesn't lose visibility on the Tech/Mgmt side.
-- **Rejected tab**: unreachable for non-power roles anyway (`showRejectedTab` in the dashboard is already power-user-only), so this change never interacts with it.
+```html
+<td class="col-skill"><b>{{ row.label }} <span class="req">*</span></b></td>
+```
+```html
+<td class="col-skill"><b>Overall comment <span class="req">*</span></b></td>
+```
 
-## One more thing worth confirming
+One honest caveat: I've seen Management round's per-skill row markup and its submit button precisely, but I haven't been shown the exact HTML around its "Overall comment" row specifically — I've written that line matching the identical pattern the other three panels use. If it turns out to be structured differently in your actual file, send me that snippet and I'll match it exactly rather than you having to adapt my guess.
 
-With this change, an Onshore panel member will **never see an unassigned onshore-pending candidate** — only ones already assigned to them specifically. I checked, and this is actually consistent with how the round is already configured (`onshoreRound.selfAssign` is an empty array — there was never a self-claim button for this round to begin with, only HR can assign it), so you're not losing any "claim it myself" capability that existed before. But it does mean Onshore panel members have no way to discover unclaimed onshore candidates through the dashboard at all — that has to come through HR assigning it first. Let me know if that's exactly what you want, or if unassigned-but-pending-onshore candidates should still show up (just visually flagged as unassigned) so panel members know work is coming.
+Everything above only touches `submit()` guards and `[disabled]` bindings — no changes to `getAccess()`, assignment logic, the OnshorePanel visibility fix, or anything from earlier in this conversation. Ready for the CSS whenever you are.
 
-Let me know how it looks once you've wired it in, and whether the unassigned-onshore-candidate behavior above is what you actually want.
+Whenever you're ready for the CSS, send over `round-panel.shared.scss` (or the relevant `.col-round`/`.col-score` rule) and we'll finish the Tech Round column width fix.
