@@ -1,42 +1,90 @@
-Found it — this is a mapping bug in `candidate.service.ts`, not the panel. The candidate model's `toYesNo()` helper converts `HrRoundOfferAccepted` from SharePoint back into your `Candidate` object, but it only recognizes `'Yes'`/`'No'` — anything else, including your new `'Pending'`, silently collapses to `null`. So the write to SharePoint may well be succeeding, but the moment the local candidate gets reset (via `ngOnChanges()` re-reading `this.candidate.hrRound.offerAccepted`, or on next fetch/refresh), `'Pending'` gets wiped back to `null` — which looks exactly like "I click it, save, and it's gone, have to click again."
+Good — this maps cleanly onto architecture you already have. `odata-filter.service.ts`'s `buildDashboardFilter()` already builds an OData `$filter` clause from `DashboardFilters` (role/profile/interviewType/cohort), and `searchGroup()` already builds a `substringof(...)` OR-clause across `SEARCHABLE_COLUMNS` — but currently the dashboard's search box is wired to **client-side** filtering (`filteredRows` in `dashboard.component.ts`, using `searchTerm` locally against already-fetched rows). You want it moved server-side, combined with the existing filters, and triggered only by a button click — not on every keystroke.
 
-## Fix — `candidate.service.ts`
+## 1. `odata-filter.service.ts` — expand `SEARCHABLE_COLUMNS`, wire search into the main filter
 
-Find the existing `toYesNo()`:
+Update the column list to the four you asked for:
 ```ts
-private toYesNo(v: string | null): YesNo {
-  if (v === 'Yes') return 'Yes';
-  if (v === 'No') return 'No';
-  return null;
+export const SEARCHABLE_COLUMNS = [
+  'CandidateName',
+  'CandidateEmailID',
+  'CandidatePhoneNumber',
+  'CandidateID',
+];
+```
+
+`searchGroup()` and `buildDashboardFilter()` already exist and already combine `search` into the returned clause via `filters.search` — so **no changes needed there**, since `buildDashboardFilter` already does `[role, profile, type, cohort, search].forEach(c => { if (c) clauses.push(c); })`. It was already designed to include search server-side — it just wasn't being triggered that way from the UI. Good news: this means step 1 is just the column list change above.
+
+## 2. `dashboard.component.ts` — split "typed text" from "active search," gate by button
+
+**Add:**
+```ts
+pendingSearch = '';   // NEW — what's typed in the box, not yet submitted
+```
+
+**Replace `onSearch()`** — currently probably does `this.searchTerm = term; this.currentPage = 1;` (client-side, live). Change it to just track the typed value without triggering anything:
+
+```ts
+onSearch(term: string): void {
+  this.pendingSearch = term;
 }
 ```
 
-Add a **separate** mapper for offer-accepted specifically (don't touch `toYesNo` itself — it's still correctly used for `offerSent` and possibly elsewhere, and those should stay Yes/No/null only):
-
+**Add a new method for the button:**
 ```ts
-private toOfferAccepted(v: string | null): OfferAcceptedStatus {
-  if (v === 'Yes') return 'Yes';
-  if (v === 'No') return 'No';
-  if (v === 'Pending') return 'Pending';
-  return null;
+runSearch(): void {
+  this.filters = { ...this.filters, search: this.pendingSearch.trim() || undefined };
+  this.currentPage = 1;
+  this.reload();
+  this.dashboardState.set({ filters: this.filters });
 }
 ```
 
-Then in `mapCandidate()` / wherever `hrRound.offerAccepted` gets built, change:
+**In `clearFilters()`**, also reset `pendingSearch` alongside `searchTerm` (or remove `searchTerm` entirely if it's now unused — see step 4):
 ```ts
-offerAccepted: this.toYesNo(item.HrRoundOfferAccepted),
+clearFilters(): void {
+  const cohort = this.selectedCohort;
+  this.filters = { ...(cohort ? { cohort } : {}) };
+  this.pendingSearch = '';
+  this.reload();
+  ...
+}
 ```
-to:
+
+**`ngOnInit()` / `loadInitialData()` restore path** — if `snap.filters.search` was restored from sessionStorage, also seed `pendingSearch` so the box shows the last active search on reload:
+
 ```ts
-offerAccepted: this.toOfferAccepted(item.HrRoundOfferAccepted),
+this.pendingSearch = snap.filters?.search ?? '';
 ```
 
-(Import `OfferAcceptedStatus` from `candidate.model` at the top of the file alongside your other model imports.)
+## 3. `dashboard.component.html` — add the search button
 
-## One more thing to verify — the SharePoint column itself
+Find your search input (currently likely `(input)="onSearch(...)"` bound directly):
+```html
+<input
+  type="text"
+  placeholder="Search name, email, phone, ID..."
+  [value]="pendingSearch"
+  (input)="onSearch($any($event.target).value)"
+  (keyup.enter)="runSearch()"
+/>
+<button class="btn primary" (click)="runSearch()">Search</button>
+```
+(`keyup.enter` is optional but a nice touch — pressing Enter also fires the search, not just the button.)
 
-If `HrRoundOfferAccepted` is a SharePoint **Choice** column with only "Yes"/"No" as valid options, the write of `'Pending'` will be **rejected by SharePoint** even after this code fix — that would explain the exact same symptom (looks unsaved) but for a completely different reason (server-side rejection, not client mapping).
+## 4. `filteredRows` getter — remove the client-side search re-filter
 
-Please check: List Settings → that column → confirm "Pending" is listed as one of the choices (or that it's a plain text/free-text field, not a restricted Choice field). If it's Choice-restricted, add "Pending" as a valid option there.
+Since search now happens server-side via `$filter`, the client-side re-filtering by `searchTerm` in `UI_SEARCHABLE_COLUMNS` is redundant and would double-filter incorrectly (rows already server-filtered wouldn't need re-checking, and worse, `pendingSearch` typed-but-unsubmitted text shouldn't affect what's shown). Simplify:
 
-Try the code fix first — if it still doesn't persist after that, it's the SharePoint column restriction, and I'll help you fix the column definition next.
+```ts
+get filteredRows(): Candidate[] {
+  return this.rows;   // server already applied search + all other filters
+}
+```
+
+You can delete `UI_SEARCHABLE_COLUMNS` and the old `searchTerm` field entirely if nothing else references them — or leave them unused if you'd rather not touch more than necessary right now.
+
+## 5. Every other filter — untouched, confirmed
+
+`role`/`profile`/`interviewType`/`cohort` dropdowns already call `onFilterChange()` → `reload()` directly (live, no button) exactly as before — none of that changes. `runSearch()` reuses the exact same `this.filters` object and `reload()` pipeline, so when you click Search, the request naturally includes whatever role/profile/cohort/tab/location filters are currently active, combined via `buildDashboardFilter()`'s existing `.join(' and ')` — search is just one more clause in the same `$filter`, not a separate mechanism.
+
+**Net behavior:** typing in the box does nothing to the data until you click Search (or press Enter) — dropdown filters keep working live as they already did — and once you do search, it's a real server-side `substringof` query across name/email/phone/ID, combined with whatever else is filtered, restored correctly from sessionStorage on refresh.
