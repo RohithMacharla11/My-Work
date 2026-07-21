@@ -1,158 +1,147 @@
-Now I have everything I need. Here's the complete, exact diff.
+Much simpler — one column, no schema changes needed beyond what you already have. Here's the full design.
 
-## 1. `workflow.service.ts` — add `canEditDecision`
-
-**Interface:**
+## 1. `cohort.config.ts` — just the column name
 ```ts
-export interface RoundAccess {
-  state: AccessState;
-  canEdit: boolean;
-  canEditDecision: boolean;   // NEW — only the actual assigned interviewer can change Selected/Rejected
-  assignedToName?: string;
+export const AUDIT_TRAIL_COL = 'AuditTrail';
+```
+
+## 2. New file — `core/utils/audit-trail.util.ts`
+
+```ts
+export interface AuditEntry {
+  name: string;
+  date: string;       // ISO string
+  component: string;  // e.g. "HR Round"
+}
+
+const ENTRY_SEP = ';';
+const FIELD_SEP = '|';
+
+export function parseAuditTrail(raw: string | null | undefined): AuditEntry[] {
+  if (!raw) return [];
+  return raw
+    .split(ENTRY_SEP)
+    .map(e => e.trim())
+    .filter(Boolean)
+    .map(e => {
+      const [name, date, component] = e.split(FIELD_SEP);
+      return { name: name ?? '', date: date ?? '', component: component ?? '' };
+    });
+}
+
+export function appendAuditEntry(
+  raw: string | null | undefined,
+  entry: AuditEntry
+): string {
+  const newEntry = `${entry.name}${FIELD_SEP}${entry.date}${FIELD_SEP}${entry.component}`;
+  return raw ? `${raw}${ENTRY_SEP}${newEntry}` : newEntry;
+}
+
+/** Latest entry for a specific round/component (last one appended for that component). */
+export function latestAuditEntryFor(raw: string | null | undefined, component: string): AuditEntry | null {
+  const entries = parseAuditTrail(raw).filter(e => e.component === component);
+  return entries.length ? entries[entries.length - 1] : null;
 }
 ```
 
-**`getAccess()` — every return statement gets the new field, `canEditDecision` is simply `mine`:**
+## 3. `candidate.model.ts` — one field
+```ts
+auditTrail?: string;
+```
+
+## 4. `candidate.service.ts`
+
+Import `AUDIT_TRAIL_COL` alongside your other config imports, add to `SELECT_FIELDS`/`DASHBOARD_SELECT_FIELDS` if you want it dashboard-visible, and in `mapCandidate()`:
+```ts
+auditTrail: item[AUDIT_TRAIL_COL] ?? '',
+```
+
+## 5. Panel `submit(adminMode)` — build + append + push
+
+`hr-round-panel.component.ts` (same pattern for mgmt/onshore/tech, shown once):
 
 ```ts
-getAccess(c: Candidate, key: RoundKey): RoundAccess {
+import { ROUNDS, AUDIT_TRAIL_COL } from '../../../../core/config/cohort.config';
+import { appendAuditEntry, latestAuditEntryFor } from '../../../../core/utils/audit-trail.util';
+
+get isAdminOverride(): boolean {
+  return this.access?.canEdit === true && this.access?.canEditDecision === false;
+}
+
+lastAdminEdit() {
+  return latestAuditEntryFor(this.candidate.auditTrail, ROUNDS.hrRound.name);
+}
+
+submit(adminMode = false): void {
+  if (this.saving) return;
+  if (!adminMode && (!this.decision || !this.access.canEditDecision)) return;
+
   const me = this.currentUser.get();
+  const prefix = ROUNDS.hrRound.prefix;
 
-  if (!this.canView(c, key)) return { state: 'no-access', canEdit: false, canEditDecision: false };
-  if (key === 'techRound2' && this.isTechRound2Skipped(c))
-    return { state: 'skipped', canEdit: false, canEditDecision: false };
-  if (key === 'onshoreRound' && this.isOnshoreSkipped(c))
-    return { state: 'skipped', canEdit: false, canEditDecision: false };
-
-  if (!this.hasReached(c, key)) return { state: 'not-reached', canEdit: false, canEditDecision: false };
-
-  const locked = this.isRoundLocked(c, key);
-  const active = key === 'mgmtRound'
-    ? this.hasReached(c, 'mgmtRound') && this.status(c, 'mgmtRound') === S.Pending
-    : this.activeRound(c) === key;
-  const assignedTo = this.assignee(c, key);
-  const mine = !!assignedTo && assignedTo.id === me.id;
-  const canEditByRole = this.currentUser.canEditAnything();
-  const inPanel = this.editableRounds().includes(key);
-
-  if (active && !locked) {
-    if (!assignedTo && (canEditByRole || this.ownsRoundByRole(key))) {
-      return { state: 'assignable', canEdit: false, canEditDecision: false };
-    }
-    if (mine || canEditByRole) {
-      return { state: 'editable', canEdit: true, canEditDecision: mine, assignedToName: assignedTo?.title };
-    }
+  const fields: Record<string, any> = {
+    [`${prefix}OfferSent`]: this.offerSent,
+    [`${prefix}OfferAccepted`]: this.offerAccepted,
+    [`${prefix}InterviewDate`]: new Date().toISOString(),
+  };
+  if (this.decision !== null) fields[`${prefix}InterviewSelection`] = this.decision;
+  if (!adminMode) {
+    fields[`${prefix}InterviewedById`] = me.id;
   }
 
-  if (this.currentUser.isAdmin()) {
-    return { state: 'editable', canEdit: true, canEditDecision: mine, assignedToName: assignedTo?.title };
+  let newTrail = this.candidate.auditTrail ?? '';
+  if (adminMode) {
+    newTrail = appendAuditEntry(newTrail, {
+      name: me.title,
+      date: new Date().toISOString(),
+      component: ROUNDS.hrRound.name,
+    });
+    fields[AUDIT_TRAIL_COL] = newTrail;
   }
 
-  return { state: 'readonly', canEdit: false, canEditDecision: false, assignedToName: assignedTo?.title };
+  this.saving = true;
+  this.candidates.submitRound(this.candidate, fields).subscribe({
+    next: () => {
+      this.candidate.hrRound.offerSent = this.offerSent;
+      this.candidate.hrRound.offerAccepted = this.offerAccepted;
+      if (this.decision !== null) this.candidate.hrRound.selection = this.decision as RoundStatus;
+      if (adminMode) this.candidate.auditTrail = newTrail;
+
+      this.ngOnChanges();
+      this.changed.emit();
+      this.candidates.patchStatus(this.candidate).subscribe({
+        next: () => { this.saving = false; this.ngOnChanges(); this.router.navigate(['/success']); },
+        error: () => { this.saving = false; },
+      });
+    },
+    error: () => { this.saving = false; },
+  });
 }
 ```
 
-That's the entire service change. Logic: `canEditDecision` is `true` only when the viewer **is** the assigned interviewer (`mine`) — HR Admin editing someone else's round gets `canEdit: true, canEditDecision: false`. If HR Admin happens to also be the assigned interviewer, `mine` is true and they keep full control, same as any other interviewer.
+## 6. Template — two buttons + last-edit line
 
-## 2. Each panel template — same 3-part pattern
-
-Replace the existing `*ngIf="access.canEdit"` (or `r1.canEdit`/`r2.canEdit`) decision block with three variants: **editable buttons** (canEditDecision), **highlighted read-only** (canEdit but not canEditDecision), **plain chip** (fully readonly — you already have this one).
-
-**`hr-round-panel.component.html`** — replace the `Decision` field block:
 ```html
-<div class="field">
-  <label>Decision <span class="req" *ngIf="access.canEditDecision">*</span></label>
+<div class="actions" *ngIf="access.canEditDecision">
+  <button class="btn primary" [disabled]="!decision || saving" (click)="submit()">Save</button>
+</div>
 
-  <div class="selector" *ngIf="access.canEditDecision">
-    <button class="selopt y" [class.on]="decision === Sel" (click)="decision = Sel">✓ Selected</button>
-    <button class="selopt n" [class.on]="decision === Rej" (click)="decision = Rej">X Rejected</button>
-  </div>
+<div class="actions" *ngIf="isAdminOverride">
+  <button class="btn primary" [disabled]="saving" (click)="submit(true)">Save changes (Admin)</button>
+</div>
 
-  <div class="selector locked-decision" *ngIf="access.canEdit && !access.canEditDecision">
-    <button class="selopt y" [class.on]="candidate.hrRound.selection === Sel" disabled>✓ Selected</button>
-    <button class="selopt n" [class.on]="candidate.hrRound.selection === Rej" disabled>X Rejected</button>
-  </div>
+<div class="dim small" *ngIf="lastAdminEdit() as edit" style="margin-top:6px">
+  Last edited by {{ edit.name }} · {{ formatDate(edit.date) }}
 </div>
 ```
 
-(Leave the existing bottom `*ngIf="!access.canEdit && (...)"` chip block untouched — that already covers fully-readonly viewers.)
+## Repeat for the other three panels
 
-**`mgmt-round-panel.component.html`** — replace the decision `<td>`:
-```html
-<td class="col-round">
-  <div class="selector" *ngIf="access.canEditDecision">
-    <button class="selopt y" [class.on]="decision === Sel" (click)="decision = Sel">✓ Selected</button>
-    <button class="selopt n" [class.on]="decision === Rej" (click)="decision = Rej">X Rejected</button>
-  </div>
-  <div class="selector locked-decision" *ngIf="access.canEdit && !access.canEditDecision">
-    <button class="selopt y" [class.on]="candidate.mgmtRound.selection === Sel" disabled>✓ Selected</button>
-    <button class="selopt n" [class.on]="candidate.mgmtRound.selection === Rej" disabled>X Rejected</button>
-  </div>
-  <ng-container *ngIf="!access.canEdit">
-    <span class="chip pass" *ngIf="candidate.mgmtRound.selection === Sel"><i></i>Selected</span>
-    <span class="chip rej" *ngIf="candidate.mgmtRound.selection === Rej"><i></i>Rejected</span>
-    <span class="dim" *ngIf="candidate.mgmtRound.selection !== Sel && candidate.mgmtRound.selection !== Rej">Pending</span>
-  </ng-container>
-</td>
-```
+- **`mgmt-round-panel.component.ts`** — same, `ROUNDS.mgmtRound.name`/`prefix`, decision field is `${prefix}InterviewSelection`, `MGMT_OVERALL_COL`, `MGMT_SKILL_COLS` untouched.
+- **`onshore-round-panel.component.ts`** — same, `ROUNDS.onshoreRound.name`/`prefix`.
+- **`tech-round-panel.component.ts`** — `submit(round: TechKey, adminMode = false)`, use `ROUNDS[round].name` and `ROUNDS[round].prefix` dynamically, same append logic keyed to whichever round (R1 or R2) was saved. Template needs two admin buttons (one per round), each calling `submit('techRound1', true)` / `submit('techRound2', true)`, gated by `r1.canEdit && !r1.canEditDecision` / `r2.canEdit && !r2.canEditDecision`.
 
-**`onshore-round-panel.component.html`** — replace the `Result` field:
-```html
-<div class="field">
-  <label>Result <span class="req" *ngIf="access.canEditDecision">*</span></label>
-
-  <div class="selector" *ngIf="access.canEditDecision">
-    <button class="selopt y" [class.on]="decision === Sel" (click)="decision = Sel">✓ Selected</button>
-    <button class="selopt n" [class.on]="decision === Rej" (click)="decision = Rej">X Rejected</button>
-  </div>
-
-  <div class="selector locked-decision" *ngIf="access.canEdit && !access.canEditDecision">
-    <button class="selopt y" [class.on]="candidate.onshoreRound.selection === Sel" disabled>✓ Selected</button>
-    <button class="selopt n" [class.on]="candidate.onshoreRound.selection === Rej" disabled>X Rejected</button>
-  </div>
-</div>
-```
-(Leave that panel's `*ngIf="!access.canEdit && (...Sel||...Rej)"` chip block as-is.)
-
-**`tech-round-panel.component.html`** — this one has two decisions (R1/R2), same pattern twice. R1 block:
-```html
-<td class="col-round">
-  <div class="selector" *ngIf="r1.canEditDecision">
-    <button class="selopt neutral-y" [class.on]="r1Decision === Sel" (click)="r1Decision = Sel">✓ Recommended</button>
-    <button class="selopt neutral-n" [class.on]="r1Decision === Rej" (click)="r1Decision = Rej">X Not Recommended</button>
-  </div>
-  <div class="selector locked-decision" *ngIf="r1.canEdit && !r1.canEditDecision">
-    <button class="selopt neutral-y" [class.on]="decisionOf('techRound1') === Sel" disabled>✓ Recommended</button>
-    <button class="selopt neutral-n" [class.on]="decisionOf('techRound1') === Rej" disabled>X Not Recommended</button>
-  </div>
-  <ng-container *ngIf="!r1.canEdit">
-    <span class="chip neutral" *ngIf="decisionOf('techRound1') === Sel"><i></i>Recommended</span>
-    <span class="chip neutral" *ngIf="decisionOf('techRound1') === Rej"><i></i>Not Recommended</span>
-    <span class="dim" *ngIf="decisionOf('techRound1') !== Sel && decisionOf('techRound1') !== Rej">Pending</span>
-  </ng-container>
-</td>
-```
-
-R2 block — identical pattern, swap `r1`→`r2`, `r1Decision`→`r2Decision`, `'techRound1'`→`'techRound2'`.
-
-## 3. CSS — highlighted-but-locked look
-
-Add to `round-panel.shared.scss`:
-```scss
-.locked-decision .selopt {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-.locked-decision .selopt.on {
-  opacity: 1;
-  box-shadow: 0 0 0 2px currentColor inset;  // visually highlight the current decision without allowing change
-}
-```
-
-## What you don't need to touch
-
-- **Feedback textareas / comment fields** in every panel already gate on `access.canEdit` — unchanged, HR Admin can still edit them.
-- **Submit buttons** already gate on `access.canEdit` — unchanged, HR Admin can still submit (their feedback edits, decision stays whatever it already was in `candidate.xRound.selection` since the disabled buttons never touch `decision`/`r1Decision`/`r2Decision` — but wait: **check this** — each panel's `submit()` sends `decision` (the component's editable field) as the field value. If HR Admin can't edit `decision` via UI, `decision` needs to be pre-seeded from the existing selection so submit doesn't silently overwrite it. Confirm each panel's `ngOnChanges()` already sets e.g. `this.decision = this.candidate.hrRound.selection === Pending ? null : this.candidate.hrRound.selection` — from what I can see in `hr-round-panel.component.ts` it does exactly that (`this.decision = ... === Pending ? null : this.candidate.hrRound.selection`). Since HR Admin can't click the buttons, `decision` stays at that pre-seeded value and submit sends the same decision back unchanged — correct behavior, no data loss.
-- **"Submitted by" name** — already rendered via `{{ access.assignedToName }}` in each panel's header-meta block, inside the `editable || readonly` container, so it shows regardless of who's viewing.
-
-One thing to verify on your end after applying: for **HrAdmin** with `mgmtRound`/`onshoreRound`/`hrRound` where `decision` starts `null` (round genuinely still Pending, no `mine` and no prior HR edit) — the Submit button's `[disabled]="!decision || saving"` will correctly stay disabled since HR Admin never gets to set `decision` via the locked buttons in that case, which is the right outcome (nothing to submit yet).
+## Nothing else changes
+- `ROUNDS[key].name` already exists in your config — that's what supplies the "component" string, so no new constant needed for round names.
+- No new SharePoint columns beyond confirming `AuditTrail` is a **multi-line text** field (needs to be, since entries will grow past 255 chars over time) — single-line text truncates silently in SharePoint, worth double-checking that column's type before this goes live.
+- One audit column now covers all five rounds — you can also render a **full history** anywhere by calling `parseAuditTrail(candidate.auditTrail)` and looping, if you ever want a complete admin-changes log view instead of just "latest per round."
