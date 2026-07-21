@@ -1,67 +1,36 @@
-That's a layout fix, not a logic change — the button just needs to move inside the input's wrapper and become an icon. Only the HTML/CSS around the search box changes; everything in `dashboard.component.ts` from the last message stays exactly as is.
+This is a straightforward SharePoint redirect pattern — `NewForm.aspx` (SharePoint's native "add item" page) accepts a `Source` query parameter, and after Save or Cancel it sends the user back to whatever URL you put there. Since your app is a SPA using hash routing, `Source` needs to be the full URL back to your dashboard route.
 
-## `dashboard.component.html` — replace the search input block
+## `create-cohort.component.ts` — replace the create/open logic
 
+```ts
+import { SharePointContextService } from '../../core/services/sharepoint-context.service';
+import { LISTS } from '../../core/config/cohort.config';
+
+constructor(private ctx: SharePointContextService) {}
+
+openNewCohortForm(): void {
+  const dashboardUrl = `${window.location.origin}${window.location.pathname}#/dashboard`;
+  const listUrlName = LISTS.cohortSchedule.replace(/ /g, '%20');   // see note below
+  const newFormUrl =
+    `${this.ctx.siteUrl}/Lists/${listUrlName}/NewForm.aspx?Source=${encodeURIComponent(dashboardUrl)}`;
+
+  window.location.href = newFormUrl;
+}
+```
+
+Wire it to whatever button currently opens your custom create-cohort modal:
 ```html
-<div class="search-box">
-  <input
-    type="text"
-    class="search-input"
-    placeholder="Search name, email, phone, ID..."
-    [value]="pendingSearch"
-    (input)="onSearch($any($event.target).value)"
-    (keyup.enter)="runSearch()"
-  />
-  <button class="search-icon-btn" type="button" (click)="runSearch()" title="Search">
-    <i class="icon-search"></i>
-  </button>
-</div>
+<button class="btn primary" (click)="openNewCohortForm()">Create Cohort</button>
 ```
 
-(If you're not using an icon font like `icon-search`, swap that `<i>` for an inline SVG — see below.)
+## What this does
 
-## Add to `dashboard.component.scss`
+- Navigates the browser straight to SharePoint's native New Item form for the **Cohort Schedule** list — no custom modal, exactly SharePoint's own UI.
+- User fills it in and clicks **Save** (or Cancel) on that native page.
+- SharePoint then redirects back to whatever `Source` URL you passed — here, your dashboard route (`#/dashboard`) — landing them right back in the app.
 
-```scss
-.search-box {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
+## One thing to verify before this works
 
-.search-input {
-  width: 100%;
-  padding-right: 36px;   // room for the icon so text doesn't run under it
-}
+`NewForm.aspx`'s URL segment isn't always the list's display title with spaces — SharePoint sometimes internally maps it differently (e.g. `Cohort%20Schedule` vs `CohortSchedule` vs an auto-generated internal name). The safest way to get it exactly right: open your **Cohort Schedule** list in the browser directly, click "+ New" there once, and copy the exact URL SharePoint shows you (it'll look like `.../Lists/Cohort%20Schedule/NewForm.aspx` or similar) — then hardcode that path (or just the list segment) into the constant above instead of deriving it from `LISTS.cohortSchedule`, since a display-title-based guess can silently 404 if the internal URL name differs.
 
-.search-icon-btn {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  background: transparent;
-  border: none;
-  padding: 4px;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  color: var(--muted, #8a8a8a);
-}
-
-.search-icon-btn:hover {
-  color: var(--ink, #1a1a1a);
-}
-```
-
-## If you don't have an icon font, use this inline SVG instead of `<i class="icon-search"></i>`
-
-```html
-<button class="search-icon-btn" type="button" (click)="runSearch()" title="Search">
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <circle cx="11" cy="11" r="7"></circle>
-    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-  </svg>
-</button>
-```
-
-This puts the search icon flush inside the right edge of the same box the text sits in — `position: absolute` layers it over the input rather than pushing a separate button below/beside it, and the input's `padding-right` keeps typed text from running underneath the icon. No changes to `dashboard.component.ts` needed at all — `runSearch()` and `pendingSearch` from before are unchanged.
+Can you grab that URL for me? Once I see the real segment I'll lock the exact string in instead of the `.replace(/ /g, '%20')` guess.
