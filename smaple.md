@@ -1,250 +1,96 @@
-Found it exactly — thank you for the screenshots, this made it very clear. Look at your "actions" footer section (around line 226 onward): there are now **two separate "Submit Tech Round 2" buttons** sitting next to each other (one with the new mandatory-overall check, one without), and the **"Save Tech Round 1 (Admin)" button is missing entirely**. When the mandatory-overall change got pasted in, it landed as a new line instead of replacing the old one, and the Round 1 admin button got dropped in the process. That's exactly what broke the layout and gave you the duplicate button.
+Your guard bypass is working — the 401 isn't coming from Angular at all. It's the API rejecting the request.
 
-Here's the corrected `tech-round-panel.component.html`, complete, with only that one section fixed — everything else (including your `showTechRound2Column` gating and the mandatory-overall checks) is preserved exactly as you have it:
+**Why it still fails:** `ssc-ecm-api.dev.echonet` authenticates via an SSO session cookie scoped to `.echonet`. Your browser has that cookie, which is why pasting the URL works. But your app runs on `localhost:8080`, so the XHR is **cross-origin** — the browser won't attach an `.echonet` cookie to a request from a `localhost` origin, and the API almost certainly doesn't allowlist `localhost` in CORS either. `withCredentials: true` can't fix that. Commenting out the guard only skips the client-side route check; it does nothing to the outgoing HTTP call.
 
-```html
-<section class="card" id="section-tech" *ngIf="r1.state !== 'no-access'">
-  <div class="card-head">
-    <h2>Technical assessment</h2>
-    <span class="chip idle"><i></i>Screening scores locked</span>
-  </div>
+The fix is to stop making it cross-origin: proxy through the Angular dev server and inject your real cookie server-side.
 
-  <div class="scroll-x">
-    <table class="grid feedback">
-      <thead>
-        <tr>
-          <th class="col-skill">Skill</th>
-          <th class="col-score">Pre-Screening Marks</th>
+---
 
-          <!-- Tech Round 1 column header -->
-          <th class="col-round">
-            <div class="round-head">
-              <b>Tech Round 1</b>
-              <span class="chip you sm" *ngIf="r1.canEdit"><i></i>Your turn</span>
-              <span class="chip pass sm" *ngIf="!r1.canEdit && decisionOf('techRound1') === Sel">
-                <i></i>Recommended
-              </span>
-              <span class="chip wait sm" *ngIf="!r1.canEdit && decisionOf('techRound1') === Rej">
-                <i></i>Not Recommended
-              </span>
-              <span class="chip wait sm" *ngIf="!r1.canEdit && r1.state === 'readonly' &&
-                r1.assignedToName && decisionOf('techRound1') !== Sel && decisionOf('techRound1') !== Rej">
-                <i></i>Assigned to {{ r1.assignedToName }}
-              </span>
-              <span class="chip idle sm" *ngIf="!r1.canEdit && r1.state === 'assignable'"><i></i>Unassigned</span>
-              <span class="chip idle sm" *ngIf="!r1.canEdit && r1.state === 'not-reached'"><i></i>Pending</span>
-            </div>
-            <small>
-              {{ interviewer("techRound1") }}
-              <span *ngIf="candidate.techRound1.interviewDate">
-                · {{ formatFriendlyDate(candidate.techRound1.interviewDate) }}
-              </span>
-            </small>
-          </th>
+**1. `proxy.conf.js`** (create at project root — use `.js`, not `.json`, so you can set headers)
 
-          <!-- Tech Round 2 column header -->
-          <th class="col-round" *ngIf="showTechRound2Column">
-            <div class="round-head">
-              <b>Tech Round 2</b>
-              <span class="chip na sm" *ngIf="r2.state === 'skipped'"><i></i>Skipped</span>
-              <span class="chip you sm" *ngIf="r2.canEdit"><i></i>Your turn</span>
-              <span class="chip pass sm" *ngIf="
-                  !r2.canEdit &&
-                  r2.state !== 'skipped' &&
-                  decisionOf('techRound2') === Sel
-                "><i></i>Selected</span>
-              <span class="chip rej sm" *ngIf="
-                  !r2.canEdit &&
-                  r2.state !== 'skipped' &&
-                  decisionOf('techRound2') === Rej
-                "><i></i>Rejected</span>
-              <span class="chip wait sm" *ngIf="
-                  !r2.canEdit &&
-                  r2.state === 'readonly' &&
-                  r2.assignedToName &&
-                  decisionOf('techRound2') !== Sel &&
-                  decisionOf('techRound2') !== Rej
-                "><i></i>Assigned to {{ r2.assignedToName }}</span>
-              <span class="chip idle sm" *ngIf="!r2.canEdit && r2.state === 'assignable'"><i></i>Unassigned</span>
-              <span class="chip idle sm" *ngIf="!r2.canEdit && r2.state === 'not-reached'"><i></i>Pending</span>
-            </div>
-            <small *ngIf="r2.state !== 'skipped'">
-              {{ interviewer("techRound2") }}
-              <span *ngIf="candidate.techRound2.interviewDate">
-                · {{ formatFriendlyDate(candidate.techRound2.interviewDate) }}
-              </span>
-            </small>
-            <small *ngIf="r2.state === 'skipped'">Not conducted</small>
-          </th>
-        </tr>
-      </thead>
+```js
+const COOKIE = process.env.SRMS_COOKIE || '';
 
-      <tbody>
-        <!-- one row per skill -->
-        <tr *ngFor="let s of candidate.skills; let i = index">
-          <td class="col-skill">
-            <div class="skill-row-flex">
-              <b>{{ s.label }}</b>
-              <span class="max-marks" *ngIf="s.maxMarks">Max {{ s.maxMarks }}</span>
-            </div>
-          </td>
-          <td class="col-score">
-            <span class="score">{{ s.screeningScore || '—' }}</span>
-          </td>
-
-          <!-- R1 cell -->
-          <td class="col-round">
-            <textarea *ngIf="r1.canEdit" [(ngModel)]="r1Comments[i]" placeholder="Enter your feedback…"></textarea>
-            <ng-container *ngIf="!r1.canEdit">
-              <span class="fb" *ngIf="s.round1Comment">{{ s.round1Comment }}</span>
-              <span class="dim" *ngIf="!s.round1Comment">{{
-                r1.state === "editable" || r1.state === "assignable"
-                  ? "Awaiting feedback"
-                  : "—"
-              }}</span>
-            </ng-container>
-          </td>
-
-          <!-- R2 cell -->
-          <td class="col-round" *ngIf="showTechRound2Column">
-            <span class="dim" *ngIf="r2.state === 'skipped'">N/A</span>
-            <ng-container *ngIf="r2.state !== 'skipped'">
-              <textarea *ngIf="r2.canEdit" [(ngModel)]="r2Comments[i]" placeholder="Enter your feedback…"></textarea>
-              <ng-container *ngIf="!r2.canEdit">
-                <span class="fb" *ngIf="s.round2Comment">{{ s.round2Comment }}</span>
-                <span class="dim" *ngIf="!s.round2Comment">{{
-                  r2.state === "assignable" ? "Awaiting feedback" : "—"
-                }}</span>
-              </ng-container>
-            </ng-container>
-          </td>
-        </tr>
-
-        <!-- overall comment row -->
-        <tr class="row-overall">
-          <td class="col-skill"><b>Overall comment <span class="req">*</span></b></td>
-          <td class="col-score dim">—</td>
-          <td class="col-round">
-            <textarea *ngIf="r1.canEdit" [(ngModel)]="r1Overall"
-              placeholder="Overall comment for this round…"></textarea>
-            <ng-container *ngIf="!r1.canEdit">
-              <span class="fb" *ngIf="candidate.techRound1.feedback">{{
-                candidate.techRound1.feedback
-              }}</span>
-              <span class="dim" *ngIf="!candidate.techRound1.feedback">—</span>
-            </ng-container>
-          </td>
-          <td class="col-round" *ngIf="showTechRound2Column">
-            <span class="dim" *ngIf="r2.state === 'skipped'">N/A</span>
-            <ng-container *ngIf="r2.state !== 'skipped'">
-              <textarea *ngIf="r2.canEdit" [(ngModel)]="r2Overall"
-                placeholder="Overall comment for this round…"></textarea>
-              <ng-container *ngIf="!r2.canEdit">
-                <span class="fb" *ngIf="candidate.techRound2.feedback">{{
-                  candidate.techRound2.feedback
-                }}</span>
-                <span class="dim" *ngIf="!candidate.techRound2.feedback">—</span>
-              </ng-container>
-            </ng-container>
-          </td>
-        </tr>
-
-        <!-- decision row -->
-        <tr class="row-decision">
-          <td class="col-skill"><b>Decision</b></td>
-          <td class="col-score dim">—</td>
-
-          <!-- R1 decision -->
-          <td class="col-round">
-            <div class="selector" *ngIf="r1.canEditDecision">
-              <button class="selopt neutral-y" [class.on]="r1Decision === Sel" (click)="r1Decision = Sel">✓
-                Recommended</button>
-              <button class="selopt neutral-n" [class.on]="r1Decision === Rej" (click)="r1Decision = Rej">X Not
-                Recommended</button>
-            </div>
-            <div class="selector locked-decision" *ngIf="r1.canEdit && !r1.canEditDecision">
-              <button class="selopt neutral-y" [class.on]="decisionOf('techRound1') === Sel" disabled>✓
-                Recommended</button>
-              <button class="selopt neutral-n" [class.on]="decisionOf('techRound1') === Rej" disabled>X Not
-                Recommended</button>
-            </div>
-            <ng-container *ngIf="!r1.canEdit">
-              <span class="chip pass sm" *ngIf="decisionOf('techRound1') === Sel"><i></i>Recommended</span>
-              <span class="chip wait sm" *ngIf="decisionOf('techRound1') === Rej"><i></i>Not Recommended</span>
-              <span class="dim"
-                *ngIf="decisionOf('techRound1') !== Sel && decisionOf('techRound1') !== Rej">Pending</span>
-            </ng-container>
-          </td>
-
-          <!-- R2 decision -->
-          <td class="col-round" *ngIf="showTechRound2Column">
-            <span class="chip na sm" *ngIf="r2.state === 'skipped'"><i></i>N/A</span>
-            <ng-container *ngIf="r2.state !== 'skipped'">
-              <div class="selector" *ngIf="r2.canEditDecision">
-                <button class="selopt neutral-y" [class.on]="r2Decision === Sel" (click)="r2Decision = Sel">✓
-                  Selected</button>
-                <button class="selopt neutral-n" [class.on]="r2Decision === Rej" (click)="r2Decision = Rej">X
-                  Rejected</button>
-              </div>
-              <div class="selector locked-decision" *ngIf="r2.canEdit && !r2.canEditDecision">
-                <button class="selopt neutral-y" [class.on]="decisionOf('techRound2') === Sel" disabled>✓
-                  Selected</button>
-                <button class="selopt neutral-n" [class.on]="decisionOf('techRound2') === Rej" disabled>X
-                  Rejected</button>
-              </div>
-              <ng-container *ngIf="!r2.canEdit">
-                <span class="chip pass sm" *ngIf="decisionOf('techRound2') === Sel"><i></i>Selected</span>
-                <span class="chip wait sm" *ngIf="decisionOf('techRound2') === Rej"><i></i>Rejected</span>
-                <span class="dim"
-                  *ngIf="decisionOf('techRound2') !== Sel && decisionOf('techRound2') !== Rej">Pending</span>
-              </ng-container>
-            </ng-container>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <!-- assign CTA (shown when the active tech round is unassigned & claimable) -->
-  <div class="editfoot" *ngIf="r1.state === 'assignable' || r2.state === 'assignable'">
-    <div class="notice info" *ngIf="r1.state === 'assignable'">
-      Tech Round 1 is unassigned.
-      <button class="btn primary sm" (click)="assignToMe('techRound1')">
-        Assign to me
-      </button>
-    </div>
-    <div class="notice info" *ngIf="r2.state === 'assignable' && canSelfAssignR2()">
-      Tech Round 2 is unassigned.
-      <button class="btn primary sm" (click)="assignToMe('techRound2')">
-        Assign to me
-      </button>
-    </div>
-  </div>
-
-  <!-- submit footer (shown for whichever round is editable) -->
-  <div class="actions">
-    <button class="btn primary" *ngIf="r1.canEditDecision" [disabled]="!r1Decision || !r1Overall.trim() || saving"
-      (click)="submit('techRound1')">Submit Tech Round 1</button>
-    <button class="btn primary" *ngIf="r1.canEdit && !r1.canEditDecision" [disabled]="saving"
-      (click)="submit('techRound1', true)">Save Tech Round 1 (Admin)</button>
-    <span class="chip pass" *ngIf="justSaved === 'techRound1'"><i></i>Saved</span>
-
-    <button class="btn primary" *ngIf="r2.canEditDecision" [disabled]="!r2Decision || !r2Overall.trim() || saving"
-      (click)="submit('techRound2')">Submit Tech Round 2</button>
-    <button class="btn primary" *ngIf="r2.canEdit && !r2.canEditDecision" [disabled]="saving"
-      (click)="submit('techRound2', true)">Save Tech Round 2 (Admin)</button>
-    <span class="chip pass" *ngIf="justSaved === 'techRound2'"><i></i>Saved</span>
-  </div>
-
-  <div class="dim small" *ngIf="lastAdminEdit('techRound1') as edit" style="margin-top:6px">
-    Tech Round 1 last edited by {{ edit.name }} · {{ formatFriendlyDate(edit.date) }}
-  </div>
-  <div class="dim small" *ngIf="lastAdminEdit('techRound2') as edit" style="margin-top:2px">
-    Tech Round 2 last edited by {{ edit.name }} · {{ formatFriendlyDate(edit.date) }}
-  </div>
-</section>
+module.exports = {
+  "/srms": {
+    target: "https://ssc-ecm-api.dev.echonet",
+    secure: false,
+    changeOrigin: true,
+    logLevel: "debug",
+    onProxyReq: (proxyReq) => {
+      if (COOKIE) proxyReq.setHeader('cookie', COOKIE);
+      proxyReq.setHeader('origin', 'https://ssc-ecm.apps.dev.echonet');
+      proxyReq.setHeader('referer', 'https://ssc-ecm.apps.dev.echonet/');
+    }
+  }
+};
 ```
 
-That's the whole file, corrected. Just replace your current `tech-round-panel.component.html` with this and the duplicate button / broken layout should be gone.
+Get the cookie: in your VM browser, log into `https://ssc-ecm.apps.dev.echonet`, F12 → Network → click any API call → Request Headers → copy the **entire** `Cookie:` value. Then:
 
-Let me know if that clears it up, or if anything still looks off after you drop it in.
+```
+set SRMS_COOKIE=<paste the whole cookie string>
+ng serve --proxy-config proxy.conf.js --port 8080
+```
+
+It expires — when 401s come back, re-copy it.
+
+**2. `dynamic.env.ts`** — add a localhost case instead of editing `default:` (leave `default` alone so UAT/PROD aren't affected):
+
+```ts
+case "http://localhost:8080":
+case "http://localhost:4200":
+  environment = {
+    srms_api_base_url: "/srms/v1/",   // relative → goes through the proxy
+    sso_client_name: "SSC-ECM-APPS-AND-SERVICES_SRMS_OIDC_DEV",
+    sso_client_id: "000b3e82-703e-1983-a340-4eb30af30000",
+    sso_url: "",
+    sso_redirect_url: "",
+    aps_eldap_group: "SRMS_EMEA_RMO_V"
+  }
+  break;
+```
+
+The relative URL is the whole point — requests now go to `localhost:8080/srms/v1/...`, same-origin, no CORS, and the proxy adds the auth.
+
+**3. `config.service.ts`** — your early `return [...]` has a real bug: it returns an array where callers expect a Promise, so any `.then()` on `loadUserGroups()` will throw. Gate it properly:
+
+```ts
+loadUserGroups(): Promise<string[]> {
+  if (!environment.sso_url) {            // local mode
+    this._currentUserGroups = ['SRMS_EMEA_RMO_V', 'SRMS_RMO_V'];
+    return Promise.resolve(this._currentUserGroups);
+  }
+  return this._httpClient.get(`${environment.srms_api_base_url}onboarding/usergroups`, {
+    headers: new HttpHeaders({ "Accept": "application/json" }),
+    withCredentials: true
+  }).toPromise().then((groups: any) => {
+    this._currentUserGroups = groups
+      .filter((dn: string) => /(?:^|,)ou=srms(?:,|$)/i.test(dn))
+      .map((dn: string) => { const m = dn.match(/^cn=([^,]+)/i); return m ? m[1] : null; })
+      .filter(Boolean);
+    return this._currentUserGroups;
+  });
+}
+
+getCurrentUserGroups(): string[] {
+  return this._currentUserGroups && this._currentUserGroups.length
+    ? this._currentUserGroups
+    : ['SRMS_EMEA_RMO_V', 'SRMS_RMO_V'];
+}
+```
+
+**4. `auth.guard.ts`** — replace the commented block with a flag so it can't ship broken:
+
+```ts
+canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot): boolean {
+  if (!environment.sso_url) return true;        // local: skip SSO
+  const ssoToken = this.auth.getSSOToken();
+  if (!ssoToken) { this.auth.redirectToSSO(); return false; }
+  return true;
+}
+```
+
+---
+
+One caveat: if your VM can't reach `ssc-ecm-api.dev.echonet` over the network at all (only the browser can, via a proxy/PAC file), the dev-server proxy will fail too. Test first with `curl -v -H "cookie: <your cookie>" https://ssc-ecm-api.dev.echonet/srms/v1/onboarding/applications` from the VM terminal. If that returns data, the proxy will work. If it can't connect, your only option is mocking the API with an `HttpInterceptor` that returns canned `IApplication[]` data — tell me and I'll write that instead.
