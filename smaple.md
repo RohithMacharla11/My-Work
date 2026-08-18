@@ -27,3 +27,28 @@ Send me both.
 I'd go with option 2 for speed given you already ship Bootstrap, unless the usage is heavy and complex.
 
 One reassurance: this was broken *before* today in the sense that it was always going to break — flex-layout couldn't survive past 15. You just found it now instead of in production.
+
+
+
+
+
+
+
+
+
+
+My mistake on the command — `Select-String` has no `-Recurse`. Use `Get-ChildItem` to feed it:
+
+```powershell
+Get-ChildItem -Path src\app -Recurse -Include *.html | Select-String -Pattern "fxLayout|fxFlex|fxLayoutAlign|fxLayoutGap" | Measure-Object
+```
+
+Then the file list:
+
+```powershell
+Get-ChildItem -Path src\app -Recurse -Include *.html | Select-String -Pattern "fxLayout|fxFlex" | Select-Object -ExpandProperty Path -Unique
+```
+
+Also confirmed from the first command: `npm ls @angular/flex-layout` returned `(empty)` — the package is genuinely gone from `node_modules` and `package.json`. Diagnosis holds.
+
+Send me both counts and I'll tell you which replacement route is worth it.
