@@ -1,28 +1,39 @@
-**46 occurrences across 6 files.** That's small — very manageable. Files: add-application, dialog, folder-management, fts-mapping, metadata-management, recordtype-management.
+/* MDC compatibility layer — @once targets pre-MDC selectors */
 
-Also useful: your `styles.css` is only 5 imports, and `@once/ng-material` is there as suspected — but leave it for now, flex-layout is the real problem.
+.mat-mdc-form-field {
+  width: 100%;
+}
 
-**My recommendation: option 2, Bootstrap classes.** You already ship Bootstrap 5, the files are few, and it removes the dependency permanently. Rough mapping:
+.mat-mdc-form-field-infix {
+  min-height: 48px;
+}
 
-| flex-layout | Bootstrap |
-|---|---|
-| `fxLayout="row"` | `class="d-flex flex-row"` |
-| `fxLayout="column"` | `class="d-flex flex-column"` |
-| `fxLayoutGap="10px"` | `class="gap-2"` (or inline `style="gap:10px"`) |
-| `fxLayoutAlign="center center"` | `class="justify-content-center align-items-center"` |
-| `fxFlex` | `class="flex-fill"` |
-| `fxFlex="50"` | `style="flex: 0 0 50%"` |
+/* underline — @once used #b4babf */
+.mat-mdc-form-field .mdc-line-ripple::before {
+  border-bottom-color: #b4babf;
+}
 
-Note these are *classes*, so merge into the element's existing `class` attribute rather than adding a second one.
+.mat-mdc-form-field.mat-form-field-disabled .mdc-line-ripple::before {
+  border-bottom-color: #f0f1f2;
+}
 
-**Start with one file** — `add-application.component.html`, since that's the modal you can see broken. Fix it, `ng serve`, confirm the modal looks right. Once the pattern is proven on one file, the other five are mechanical.
+/* label colour — @once used #5c6166 */
+.mat-mdc-form-field .mdc-floating-label,
+.mat-mdc-input-element::placeholder {
+  color: #5c6166;
+}
 
-To see exactly what you're dealing with there:
+/* hint — @once used #17181a */
+.mat-mdc-form-field-hint {
+  color: #17181a;
+  font-size: 12px;
+}
 
-```powershell
-Get-ChildItem -Path src\app -Recurse -Include *.html | Select-String -Pattern "fxLayout|fxFlex" | Where-Object { $_.Path -like "*add-application*" }
-```
+/* dialog */
+.mat-mdc-dialog-surface {
+  padding: 24px;
+}
 
-Send me that output and I'll give you the exact replacements for those lines.
-
-One thing worth saying: this is now ordinary front-end work, not upgrade work. The Angular 14 → 21 migration is genuinely finished.
+.mat-mdc-dialog-content {
+  max-height: 70vh;
+}
