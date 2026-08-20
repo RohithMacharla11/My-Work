@@ -72,16 +72,37 @@
   --mat-sys-secondary:                #025C39;
   --mat-sys-on-secondary:             #FFFFFF;
   --mat-sys-tertiary:                 #22BF84;
-  --mat-sys-surface:                  #FFFFFF;
-  --mat-sys-surface-container:        #FAFAFA;
-  --mat-sys-surface-container-high:   #F0F1F2;
+  --mat-sys-on-tertiary:              #FFFFFF;
+  --mat-sys-secondary-container:      #E8F4EF;
+  --mat-sys-on-secondary-container:   #003924;
+  --mat-sys-tertiary-container:       #E8F4EF;
+  --mat-sys-on-tertiary-container:    #003924;
+
+  /* ALL surface tokens, not just some. M3 derives surfaces from the primary
+     hue, so any token left unset stays green-tinted -- that was the green
+     dialog. Every one of these is now a CEFS neutral. */
+  --mat-sys-background:                #FAFAFA;
+  --mat-sys-on-background:             #17181A;
+  --mat-sys-surface:                   #FFFFFF;
+  --mat-sys-surface-bright:            #FFFFFF;
+  --mat-sys-surface-dim:               #F0F1F2;
+  --mat-sys-surface-variant:           #F0F1F2;
+  --mat-sys-surface-tint:              #FFFFFF;
+  --mat-sys-surface-container-lowest:  #FFFFFF;
+  --mat-sys-surface-container-low:     #FAFAFA;
+  --mat-sys-surface-container:         #FAFAFA;
+  --mat-sys-surface-container-high:    #F0F1F2;
   --mat-sys-surface-container-highest: #F0F1F2;
-  --mat-sys-on-surface:               #17181A;
-  --mat-sys-on-surface-variant:       #5C6166;
+  --mat-sys-on-surface:                #17181A;
+  --mat-sys-on-surface-variant:        #5C6166;
+  --mat-sys-inverse-surface:           #393D40;
+  --mat-sys-inverse-on-surface:        #FAFAFA;
   --mat-sys-outline:                  #B4BABF;
   --mat-sys-outline-variant:          #DCDEE0;
   --mat-sys-error:                    #CC333D;
   --mat-sys-on-error:                 #FFFFFF;
+  --mat-sys-error-container:          #FAE4E7;
+  --mat-sys-on-error-container:       #A6212A;
 
   /* Dialogs were capped at 560px, which is what squashed every form into
      a column. Let the width passed to _dialog.open() actually apply. */
@@ -121,28 +142,37 @@ html, body {
   -webkit-backdrop-filter: blur(3px) saturate(.9);
 }
 
+/* Plain white surface -- no brand tint, no green rule. The depth comes from
+   the shadow and the blurred backdrop, not from colour. */
+.mat-mdc-dialog-container,
+.mat-mdc-dialog-surface,
+.mat-mdc-dialog-container .mdc-dialog__surface {
+  --mdc-dialog-container-color: #FFFFFF;
+}
+
 .mat-mdc-dialog-surface,
 .mat-mdc-dialog-container .mdc-dialog__surface {
   border-radius: var(--bnp-r-lg) !important;
-  background: var(--bnp-white);
+  background: #FFFFFF !important;
+  background-color: #FFFFFF !important;
   box-shadow: var(--bnp-e4) !important;
-  /* 1px inner highlight along the top edge -- cheap, convincing depth */
-  border-top: 1px solid rgba(255,255,255,.9);
   padding: 28px 32px 24px;
   overflow: hidden;
 }
 
-/* Brand rule across the top of every dialog. One accent, used once. */
-.mat-mdc-dialog-surface::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 4px;
-  background: var(--bnp-grad-brand);
-}
-
-.mat-mdc-dialog-container {
-  --mdc-dialog-container-color: transparent;
+/* The confirmation dialog uses <mat-toolbar-row> for its header; M3 tints
+   toolbars from the primary hue too. */
+.mat-toolbar,
+.mat-toolbar-row,
+.mat-mdc-dialog-surface .mat-toolbar {
+  --mat-toolbar-container-background-color: #FFFFFF;
+  --mat-toolbar-container-text-color: #17181A;
+  background: #FFFFFF;
+  color: var(--bnp-black);
+  font-size: 17px;
+  font-weight: 600;
+  padding: 0;
+  min-height: unset;
 }
 
 /* Entrance. Composes with Material's own dialog animation. */
@@ -296,6 +326,71 @@ html, body {
 }
 .mat-form-field-invalid.mat-focused .mat-mdc-text-field-wrapper {
   box-shadow: var(--bnp-ring-danger);
+}
+
+
+/* --- Validation colour on the resting underline --------------------------
+   Green once a field holds a valid value, red once an invalid field has been
+   touched or edited.
+
+   Untouched blanks stay neutral grey on purpose: a freshly opened Add form
+   would otherwise open as a wall of red before you have typed anything, which
+   reads as "you did something wrong" rather than "these are required". If you
+   do want red immediately on open, see the opt-in block below.
+
+   Uses :has(), which needs a Chromium 105+ / Edge 105+ browser. On anything
+   older these rules are ignored and the underline stays neutral -- nothing
+   breaks, you just lose the colour.
+   --------------------------------------------------------------------- */
+
+/* valid AND filled -> green */
+.mat-mdc-form-field:has(input.ng-valid:not(:placeholder-shown)) .mdc-line-ripple::before,
+.mat-mdc-form-field:has(textarea.ng-valid:not(:placeholder-shown)) .mdc-line-ripple::before,
+.mat-mdc-form-field:has(mat-select.ng-valid:not(.mat-mdc-select-empty)) .mdc-line-ripple::before {
+  border-bottom-color: var(--bnp-green) !important;
+  border-bottom-width: 2px !important;
+}
+
+/* invalid AND touched/dirty -> red */
+.mat-mdc-form-field:has(.ng-invalid.ng-touched) .mdc-line-ripple::before,
+.mat-mdc-form-field:has(.ng-invalid.ng-dirty) .mdc-line-ripple::before {
+  border-bottom-color: var(--bnp-danger) !important;
+  border-bottom-width: 2px !important;
+}
+.mat-mdc-form-field:has(.ng-invalid.ng-touched) .mdc-line-ripple::after,
+.mat-mdc-form-field:has(.ng-invalid.ng-dirty) .mdc-line-ripple::after {
+  border-bottom-color: var(--bnp-danger) !important;
+}
+.mat-mdc-form-field:has(.ng-invalid.ng-touched) .mdc-floating-label,
+.mat-mdc-form-field:has(.ng-invalid.ng-dirty) .mdc-floating-label {
+  color: var(--bnp-danger) !important;
+}
+.mat-mdc-form-field.mat-focused:has(.ng-invalid.ng-touched) .mat-mdc-text-field-wrapper,
+.mat-mdc-form-field.mat-focused:has(.ng-invalid.ng-dirty) .mat-mdc-text-field-wrapper {
+  box-shadow: var(--bnp-ring-danger);
+}
+
+/* Disabled fields have neither ng-valid nor ng-invalid, so they stay neutral
+   on their own -- no rule needed. */
+
+/* OPT-IN: red the moment the dialog opens, before anything is touched.
+   Uncomment if you want that instead of the gated behaviour above.
+
+.mat-mdc-form-field:has(.ng-invalid) .mdc-line-ripple::before {
+  border-bottom-color: var(--bnp-danger) !important;
+  border-bottom-width: 2px !important;
+}
+*/
+
+
+/* --- Floating label ------------------------------------------------------
+   Only renders once <mat-label> exists in the template (add-mat-labels.ps1).
+   Material 15+ ignores `placeholder` for this. */
+.mdc-floating-label--float-above {
+  letter-spacing: .3px;
+}
+.mat-mdc-form-field .mdc-floating-label {
+  transition: color var(--bnp-fast) var(--bnp-ease);
 }
 
 
@@ -477,100 +572,4 @@ html, body {
   background: var(--bnp-green-lightest);
 }
 .mat-mdc-tab-link.mdc-tab--active .mdc-tab__text-label {
-  color: var(--bnp-green-dark);
-  font-weight: 600;
-}
-.mdc-tab-indicator__content--underline {
-  border-color: var(--bnp-green) !important;
-  border-top-width: 3px !important;
-  border-radius: 3px 3px 0 0;
-}
-
-
-/* ---------------------------------------------------------------------------
-   9. ag-grid (balham)
-   ------------------------------------------------------------------------ */
-.ag-theme-balham {
-  --ag-background-color: var(--bnp-white);
-  --ag-foreground-color: var(--bnp-black);
-  --ag-header-background-color: var(--bnp-n-lighter);
-  --ag-header-foreground-color: var(--bnp-n-darkest);
-  --ag-border-color: var(--bnp-n-light);
-  --ag-row-border-color: var(--bnp-n-lighter);
-  --ag-header-column-separator-color: var(--bnp-n-light);
-  --ag-odd-row-background-color: var(--bnp-n-lightest);
-  --ag-row-hover-color: var(--bnp-green-lightest);
-  --ag-selected-row-background-color: var(--bnp-green-lightest);
-  --ag-range-selection-border-color: var(--bnp-green);
-  --ag-input-focus-border-color: var(--bnp-green);
-  --ag-checkbox-checked-color: var(--bnp-green);
-  --ag-alpine-active-color: var(--bnp-green);
-  --ag-font-family: Roboto, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --ag-font-size: 13px;
-  --ag-grid-size: 5px;
-  --ag-cell-horizontal-padding: 14px;
-  --ag-row-height: 38px;
-  --ag-header-height: 42px;
-
-  border: 1px solid var(--bnp-n-light);
-  border-radius: var(--bnp-r-md);
-  box-shadow: var(--bnp-e1);
-  overflow: hidden;
-}
-
-.ag-theme-balham .ag-header {
-  background: var(--bnp-grad-header);
-  border-bottom: 2px solid var(--bnp-n-light);
-}
-.ag-theme-balham .ag-header-cell-text {
-  font-weight: 600;
-  letter-spacing: .3px;
-  text-transform: none;
-}
-.ag-theme-balham .ag-row {
-  transition: background var(--bnp-fast) var(--bnp-ease);
-}
-.ag-theme-balham .ag-row-selected::before {
-  background: var(--bnp-green-lightest);
-}
-/* Green edge on the row being edited -- tells you where you are in a
-   40-row grid without adding another colour to the palette. */
-.ag-theme-balham .ag-row-editing {
-  box-shadow: inset 3px 0 0 var(--bnp-green);
-  background: var(--bnp-green-lightest) !important;
-}
-
-
-/* ---------------------------------------------------------------------------
-   10. Loader
-   ------------------------------------------------------------------------ */
-.overlay {
-  background: rgba(23,24,26,.32) !important;
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
-}
-.loader {
-  border-top-color: var(--bnp-green) !important;
-}
-.loader::after {
-  border-left-color: var(--bnp-green-light) !important;
-}
-
-
-/* ---------------------------------------------------------------------------
-   11. Accessibility
-   ------------------------------------------------------------------------ */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: .01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: .01ms !important;
-  }
-  .btn.btn-primary:hover,
-  .btn.btn-bnp-ghost:hover,
-  .icon:hover {
-    transform: none;
-  }
-}
+  c
