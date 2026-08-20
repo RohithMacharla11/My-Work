@@ -1,0 +1,58 @@
+<#
+    add-mat-labels.ps1
+    ------------------------------------------------------------------
+    Adds <mat-label>X</mat-label> to every <mat-form-field> that currently
+    only has placeholder="X".
+
+    Why: Material 7 treated `placeholder` as a floating label. Material 15+
+    does not -- it renders a plain native placeholder that vanishes the moment
+    you type. That is why the new build shows bare values with no captions
+    while the old build shows a small grey label above every value.
+    No amount of CSS can restore this; the label element has to exist.
+
+    Run from the OnboardingAutomationUI project root.
+
+        Preview (changes nothing):   .\add-mat-labels.ps1
+        Apply:                       .\add-mat-labels.ps1 -Apply
+#>
+
+param([switch]$Apply)
+
+$root = '.\src\app'
+if (-not (Test-Path $root)) {
+    Write-Host "Run this from the OnboardingAutomationUI root (src\app not found)." -ForegroundColor Red
+    exit 1
+}
+
+$inputPattern  = '(<input\s+matInput[^>]*?placeholder\s*=\s*"([^"]+)"[^>]*>)'
+$selectPattern = '(<mat-select[^>]*?placeholder\s*=\s*"([^"]+)"[^>]*>)'
+$files = 0
+$labels = 0
+
+Get-ChildItem -Path $root -Recurse -Include *.html | ForEach-Object {
+    $text = Get-Content -LiteralPath $_.FullName -Raw
+    if ([string]::IsNullOrEmpty($text)) { return }
+    if ($text -match '<mat-label>') { return }   # already migrated, skip
+
+    $before = $text
+    $text = [regex]::Replace($text, $inputPattern,  '<mat-label>$2</mat-label>$1')
+    $text = [regex]::Replace($text, $selectPattern, '<mat-label>$2</mat-label>$1')
+
+    if ($text -ne $before) {
+        $n = ([regex]::Matches($text, '<mat-label>')).Count
+        $files++
+        $labels += $n
+        Write-Host ("{0,-52} {1} label(s)" -f $_.Name, $n)
+        if ($Apply) {
+            Set-Content -LiteralPath $_.FullName -Value $text -NoNewline -Encoding UTF8
+        }
+    }
+}
+
+Write-Host ""
+if ($Apply) {
+    Write-Host "Applied: $labels label(s) across $files file(s)." -ForegroundColor Green
+} else {
+    Write-Host "Preview only: would add $labels label(s) across $files file(s)." -ForegroundColor Yellow
+    Write-Host "Re-run with  -Apply  to write the changes."
+}
