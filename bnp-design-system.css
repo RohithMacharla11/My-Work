@@ -1,0 +1,576 @@
+/* ============================================================================
+   SRMS OnboardingAutomationUI -- BNP design system
+   ----------------------------------------------------------------------------
+   Loaded LAST in angular.json so it wins over Bootstrap, @once/ng-material
+   and the Angular Material theme.
+
+   Colours are the CEFS UI palette (Foundations > Colors > Palette), brand
+   green only. Written as flat CSS on purpose: no Sass, so it can never break
+   the build the way a bad token in theme.scss can.
+   ========================================================================== */
+
+
+/* ---------------------------------------------------------------------------
+   1. Tokens
+   ------------------------------------------------------------------------ */
+:root {
+  /* Brand -- BNP green */
+  --bnp-green-lightest: #E8F4EF;
+  --bnp-green-lighter:  #5DDEAD;
+  --bnp-green-light:    #22BF84;
+  --bnp-green:          #00915A;
+  --bnp-green-dark:     #025C39;
+  --bnp-green-darker:   #003924;
+
+  /* Neutrals */
+  --bnp-n-lightest: #FAFAFA;
+  --bnp-n-lighter:  #F0F1F2;
+  --bnp-n-light:    #DCDEE0;
+  --bnp-n:          #B4BABF;
+  --bnp-n-dark:     #858D94;
+  --bnp-n-darker:   #5C6166;
+  --bnp-n-darkest:  #393D40;
+  --bnp-black:      #17181A;
+  --bnp-white:      #FFFFFF;
+
+  /* Status */
+  --bnp-danger:       #CC333D;
+  --bnp-danger-light: #FAE4E7;
+  --bnp-warning:      #E68217;
+  --bnp-success:      #60AD25;
+  --bnp-info:         #26A0BE;
+
+  /* Gradients -- the depth comes from these, not from heavy borders */
+  --bnp-grad-brand:       linear-gradient(180deg, #00915A 0%, #025C39 100%);
+  --bnp-grad-brand-hover: linear-gradient(180deg, #22BF84 0%, #00915A 100%);
+  --bnp-grad-header:      linear-gradient(180deg, #FFFFFF 0%, #F0F1F2 100%);
+
+  /* Elevation -- two-layer shadows read as real depth, one layer reads flat */
+  --bnp-e1: 0 1px 2px rgba(23,24,26,.05),  0 1px 3px rgba(23,24,26,.08);
+  --bnp-e2: 0 2px 4px rgba(23,24,26,.05),  0 4px 10px rgba(23,24,26,.09);
+  --bnp-e3: 0 4px 8px rgba(23,24,26,.06),  0 12px 24px rgba(23,24,26,.12);
+  --bnp-e4: 0 8px 16px rgba(23,24,26,.07), 0 28px 56px rgba(23,24,26,.18);
+  --bnp-ring: 0 0 0 3px rgba(0,145,90,.18);
+  --bnp-ring-danger: 0 0 0 3px rgba(204,51,61,.18);
+
+  /* Shape + motion */
+  --bnp-r-sm: 4px;
+  --bnp-r-md: 8px;
+  --bnp-r-lg: 14px;
+  --bnp-ease: cubic-bezier(.2,.7,.3,1);
+  --bnp-fast: 140ms;
+  --bnp-slow: 240ms;
+
+  /* ---- Remap Angular Material's M3 system tokens onto BNP colours ----
+     This is the supported extension point: mat.theme emits these on <html>,
+     we override the handful that carry brand identity. Everything Material
+     paints (ripples, indicators, focus states) follows from here. */
+  --mat-sys-primary:                  #00915A;
+  --mat-sys-on-primary:               #FFFFFF;
+  --mat-sys-primary-container:        #E8F4EF;
+  --mat-sys-on-primary-container:     #003924;
+  --mat-sys-secondary:                #025C39;
+  --mat-sys-on-secondary:             #FFFFFF;
+  --mat-sys-tertiary:                 #22BF84;
+  --mat-sys-surface:                  #FFFFFF;
+  --mat-sys-surface-container:        #FAFAFA;
+  --mat-sys-surface-container-high:   #F0F1F2;
+  --mat-sys-surface-container-highest: #F0F1F2;
+  --mat-sys-on-surface:               #17181A;
+  --mat-sys-on-surface-variant:       #5C6166;
+  --mat-sys-outline:                  #B4BABF;
+  --mat-sys-outline-variant:          #DCDEE0;
+  --mat-sys-error:                    #CC333D;
+  --mat-sys-on-error:                 #FFFFFF;
+
+  /* Dialogs were capped at 560px, which is what squashed every form into
+     a column. Let the width passed to _dialog.open() actually apply. */
+  --mat-dialog-container-max-width: 94vw;
+  --mat-dialog-container-small-max-width: 94vw;
+}
+
+
+/* ---------------------------------------------------------------------------
+   2. Base
+   ------------------------------------------------------------------------ */
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bnp-n-lightest);
+  color: var(--bnp-black);
+  font-family: Roboto, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:focus-visible {
+  outline: 2px solid var(--bnp-green);
+  outline-offset: 2px;
+}
+
+
+/* ---------------------------------------------------------------------------
+   3. Dialog -- the surface everything else sits on
+   ------------------------------------------------------------------------ */
+
+/* Blur + tint behind the dialog. This is what makes the panel read as
+   floating rather than pasted on. */
+.cdk-overlay-dark-backdrop {
+  background: rgba(23,24,26,.42);
+  backdrop-filter: blur(3px) saturate(.9);
+  -webkit-backdrop-filter: blur(3px) saturate(.9);
+}
+
+.mat-mdc-dialog-surface,
+.mat-mdc-dialog-container .mdc-dialog__surface {
+  border-radius: var(--bnp-r-lg) !important;
+  background: var(--bnp-white);
+  box-shadow: var(--bnp-e4) !important;
+  /* 1px inner highlight along the top edge -- cheap, convincing depth */
+  border-top: 1px solid rgba(255,255,255,.9);
+  padding: 28px 32px 24px;
+  overflow: hidden;
+}
+
+/* Brand rule across the top of every dialog. One accent, used once. */
+.mat-mdc-dialog-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 4px;
+  background: var(--bnp-grad-brand);
+}
+
+.mat-mdc-dialog-container {
+  --mdc-dialog-container-color: transparent;
+}
+
+/* Entrance. Composes with Material's own dialog animation. */
+@keyframes bnp-dialog-in {
+  from { opacity: 0; transform: translateY(10px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+.mat-mdc-dialog-surface {
+  animation: bnp-dialog-in var(--bnp-slow) var(--bnp-ease) both;
+}
+
+.mat-mdc-dialog-content {
+  max-height: 72vh;
+  padding: 0 !important;
+  color: var(--bnp-black);
+}
+
+.mat-mdc-dialog-actions {
+  padding: 16px 0 0;
+  margin: 8px 0 0;
+  border-top: 1px solid var(--bnp-n-light);
+  gap: 10px;
+}
+
+/* The forms use .row/.col-sm-* inside the dialog. Give the grid room to
+   breathe vertically -- this is most of the "cramped" feeling. */
+.mat-mdc-dialog-surface .row {
+  row-gap: 4px;
+}
+.mat-mdc-dialog-surface .row > [class^="col-"],
+.mat-mdc-dialog-surface .row > [class*=" col-"] {
+  margin-bottom: 4px;
+}
+
+
+/* ---------------------------------------------------------------------------
+   4. Form fields
+   ------------------------------------------------------------------------ */
+
+/* Without this the MDC field keeps its intrinsic 180px width and refuses to
+   fill its Bootstrap column -- the single biggest layout regression. */
+.mat-mdc-form-field {
+  width: 100%;
+  letter-spacing: normal;
+}
+
+/* Quiet filled surface. M3 ships a heavy grey box; this walks it back to the
+   near-white the old build had, and keeps the underline as the active edge. */
+.mat-mdc-text-field-wrapper {
+  background: var(--bnp-n-lightest) !important;
+  border-radius: var(--bnp-r-sm) var(--bnp-r-sm) 0 0 !important;
+  transition: background var(--bnp-fast) var(--bnp-ease),
+              box-shadow var(--bnp-fast) var(--bnp-ease);
+}
+.mat-mdc-form-field:hover .mat-mdc-text-field-wrapper {
+  background: var(--bnp-n-lighter) !important;
+}
+.mat-mdc-form-field.mat-focused .mat-mdc-text-field-wrapper {
+  background: var(--bnp-white) !important;
+  box-shadow: var(--bnp-ring);
+}
+
+/* Kill MDC's grey state overlay -- it fights the background above. */
+.mat-mdc-form-field-focus-overlay {
+  background-color: transparent !important;
+}
+
+.mat-mdc-form-field-infix {
+  min-height: 44px;
+  padding-top: 20px !important;
+  padding-bottom: 6px !important;
+}
+
+/* Resting / hover / focus underline. The CEFS neutral is the same #B4BABF
+   the old @once stylesheet used, so this matches the old build exactly. */
+.mdc-line-ripple::before {
+  border-bottom-color: var(--bnp-n) !important;
+}
+.mat-mdc-form-field:hover .mdc-line-ripple::before {
+  border-bottom-color: var(--bnp-n-dark) !important;
+}
+.mdc-line-ripple::after {
+  border-bottom-color: var(--bnp-green) !important;
+  border-bottom-width: 2px !important;
+}
+
+/* Labels + placeholders */
+.mat-mdc-floating-label,
+.mdc-floating-label {
+  color: var(--bnp-n-darker) !important;
+  font-size: 13px;
+  letter-spacing: .1px;
+}
+.mat-focused .mat-mdc-floating-label,
+.mat-focused .mdc-floating-label {
+  color: var(--bnp-green) !important;
+  font-weight: 500;
+}
+.mat-mdc-input-element::placeholder,
+.mat-mdc-select-placeholder {
+  color: var(--bnp-n-dark) !important;
+  opacity: 1;
+}
+
+.mat-mdc-input-element,
+.mat-mdc-select-value-text {
+  color: var(--bnp-black);
+  font-size: 14px;
+}
+
+/* Fields with no <mat-label> have no floated label, so the value sits too
+   high in the box. Pull it back to centre. */
+.mdc-text-field--no-label .mat-mdc-form-field-infix {
+  padding-top: 13px !important;
+  padding-bottom: 13px !important;
+}
+
+/* Disabled -- readable, not invisible. Several fields are disabled by design
+   (Application Name on edit), so they still need to be legible. */
+.mat-mdc-form-field-disabled .mat-mdc-text-field-wrapper {
+  background: var(--bnp-n-lighter) !important;
+}
+.mat-mdc-form-field-disabled .mdc-line-ripple::before {
+  border-bottom-style: dotted !important;
+  border-bottom-color: var(--bnp-n-light) !important;
+}
+.mat-mdc-form-field-disabled .mat-mdc-input-element,
+.mat-mdc-form-field-disabled .mat-mdc-select-value-text {
+  color: var(--bnp-n-darker) !important;
+  -webkit-text-fill-color: var(--bnp-n-darker);
+}
+
+/* Hint / error strip. Keep a small reserved band so validation errors don't
+   shove the whole grid down when they appear. */
+.mat-mdc-form-field-subscript-wrapper {
+  min-height: 18px;
+}
+.mat-mdc-form-field-hint {
+  color: var(--bnp-black);
+  font-size: 12px;
+}
+.mat-mdc-form-field-error,
+.error {
+  color: var(--bnp-danger);
+  font-size: 12px;
+  font-weight: 500;
+}
+.mat-form-field-invalid .mdc-line-ripple::before,
+.mat-form-field-invalid .mdc-line-ripple::after {
+  border-bottom-color: var(--bnp-danger) !important;
+}
+.mat-form-field-invalid.mat-focused .mat-mdc-text-field-wrapper {
+  box-shadow: var(--bnp-ring-danger);
+}
+
+
+/* ---------------------------------------------------------------------------
+   5. Select + option overlay
+   ------------------------------------------------------------------------ */
+.mat-mdc-select-arrow {
+  color: var(--bnp-n-darker);
+}
+.mat-focused .mat-mdc-select-arrow {
+  color: var(--bnp-green);
+}
+
+.mat-mdc-select-panel,
+.mat-mdc-autocomplete-panel {
+  background: var(--bnp-white) !important;
+  border-radius: var(--bnp-r-md) !important;
+  box-shadow: var(--bnp-e3) !important;
+  border: 1px solid var(--bnp-n-light);
+  padding: 6px !important;
+}
+
+.mat-mdc-option {
+  border-radius: var(--bnp-r-sm);
+  min-height: 40px;
+  font-size: 14px;
+  color: var(--bnp-black);
+  transition: background var(--bnp-fast) var(--bnp-ease);
+}
+.mat-mdc-option:hover:not(.mdc-list-item--disabled),
+.mat-mdc-option.mat-mdc-option-active {
+  background: var(--bnp-green-lightest) !important;
+}
+.mat-mdc-option.mdc-list-item--selected:not(.mat-mdc-option-multiple) {
+  background: var(--bnp-green-lightest) !important;
+}
+.mat-mdc-option.mdc-list-item--selected .mdc-list-item__primary-text {
+  color: var(--bnp-green-dark) !important;
+  font-weight: 500;
+}
+.mat-pseudo-checkbox-checked,
+.mat-mdc-option .mat-pseudo-checkbox-checked {
+  background: var(--bnp-green) !important;
+}
+
+
+/* ---------------------------------------------------------------------------
+   6. Checkbox
+   ------------------------------------------------------------------------ */
+.mat-mdc-checkbox {
+  --mdc-checkbox-selected-icon-color: var(--bnp-green);
+  --mdc-checkbox-selected-hover-icon-color: var(--bnp-green-dark);
+  --mdc-checkbox-selected-pressed-icon-color: var(--bnp-green-dark);
+  --mdc-checkbox-selected-focus-icon-color: var(--bnp-green);
+  --mdc-checkbox-unselected-icon-color: var(--bnp-n-dark);
+  --mdc-checkbox-unselected-hover-icon-color: var(--bnp-n-darker);
+  --mdc-checkbox-selected-checkmark-color: #fff;
+}
+.mat-mdc-checkbox .mdc-form-field {
+  color: var(--bnp-black);
+  font-size: 14px;
+}
+.mat-mdc-checkbox .mdc-checkbox__background {
+  border-radius: 3px;
+  border-width: 1.5px;
+  transition: transform var(--bnp-fast) var(--bnp-ease);
+}
+.mat-mdc-checkbox:active .mdc-checkbox__background {
+  transform: scale(.92);
+}
+
+
+/* ---------------------------------------------------------------------------
+   7. Buttons
+   ----------------------------------------------------------------------------
+   Every Submit / Add / Export button carries an inline
+   style="background-color: rgb(0 156 152)". Inline styles beat stylesheets,
+   so we paint a background-IMAGE over it instead of fighting for
+   background-color. No !important needed, and the old teal never shows.
+   (Deleting those inline styles later is still the right cleanup.)
+   ------------------------------------------------------------------------ */
+.btn {
+  border-radius: var(--bnp-r-sm);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  padding: 9px 20px;
+  border: none;
+  transition: transform var(--bnp-fast) var(--bnp-ease),
+              box-shadow var(--bnp-fast) var(--bnp-ease),
+              background-image var(--bnp-fast) var(--bnp-ease);
+}
+
+.btn.btn-primary {
+  background-image: var(--bnp-grad-brand);
+  color: var(--bnp-white);
+  /* outer drop + inner top highlight = the raised, moulded look */
+  box-shadow: var(--bnp-e2), inset 0 1px 0 rgba(255,255,255,.22);
+}
+.btn.btn-primary:hover {
+  background-image: var(--bnp-grad-brand-hover);
+  box-shadow: var(--bnp-e3), inset 0 1px 0 rgba(255,255,255,.28);
+  transform: translateY(-1px);
+  color: var(--bnp-white);
+}
+.btn.btn-primary:active {
+  transform: translateY(1px);
+  box-shadow: var(--bnp-e1), inset 0 2px 4px rgba(0,0,0,.18);
+}
+.btn.btn-primary:focus-visible {
+  box-shadow: var(--bnp-e2), var(--bnp-ring);
+  outline: none;
+}
+.btn.btn-primary:disabled,
+.btn.btn-primary.disabled {
+  background-image: none;
+  background-color: var(--bnp-n-light);
+  color: var(--bnp-n-dark);
+  box-shadow: none;
+  transform: none;
+}
+
+/* Secondary action -- outlined, so the page has one dominant green button
+   rather than a row of competing ones. Add class="btn btn-bnp-ghost". */
+.btn.btn-bnp-ghost {
+  background: var(--bnp-white);
+  color: var(--bnp-green-dark);
+  border: 1px solid var(--bnp-n);
+  box-shadow: var(--bnp-e1);
+}
+.btn.btn-bnp-ghost:hover {
+  background: var(--bnp-green-lightest);
+  border-color: var(--bnp-green);
+  color: var(--bnp-green-dark);
+  transform: translateY(-1px);
+  box-shadow: var(--bnp-e2);
+}
+
+/* Icon buttons in the grid's edit column */
+.icon {
+  color: var(--bnp-n-darker);
+  transition: color var(--bnp-fast) var(--bnp-ease),
+              transform var(--bnp-fast) var(--bnp-ease);
+  cursor: pointer;
+}
+.icon:hover {
+  color: var(--bnp-green);
+  transform: scale(1.12);
+}
+.icon-cancel:hover {
+  color: var(--bnp-danger);
+}
+
+
+/* ---------------------------------------------------------------------------
+   8. Tab nav bar
+   ------------------------------------------------------------------------ */
+.mat-mdc-tab-nav-bar,
+.mat-mdc-tab-header {
+  --mat-tab-header-active-label-text-color: var(--bnp-green-dark);
+  --mat-tab-header-active-focus-label-text-color: var(--bnp-green-dark);
+  --mat-tab-header-active-hover-label-text-color: var(--bnp-green-dark);
+  --mat-tab-header-inactive-label-text-color: var(--bnp-n-darker);
+  --mat-tab-header-active-ripple-color: var(--bnp-green-lightest);
+  --mdc-tab-indicator-active-indicator-color: var(--bnp-green);
+  background: var(--bnp-white);
+  border-bottom: 1px solid var(--bnp-n-light);
+  box-shadow: var(--bnp-e1);
+}
+
+.mat-mdc-tab-link {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: .3px;
+  opacity: 1;
+  transition: background var(--bnp-fast) var(--bnp-ease);
+}
+.mat-mdc-tab-link:hover {
+  background: var(--bnp-green-lightest);
+}
+.mat-mdc-tab-link.mdc-tab--active .mdc-tab__text-label {
+  color: var(--bnp-green-dark);
+  font-weight: 600;
+}
+.mdc-tab-indicator__content--underline {
+  border-color: var(--bnp-green) !important;
+  border-top-width: 3px !important;
+  border-radius: 3px 3px 0 0;
+}
+
+
+/* ---------------------------------------------------------------------------
+   9. ag-grid (balham)
+   ------------------------------------------------------------------------ */
+.ag-theme-balham {
+  --ag-background-color: var(--bnp-white);
+  --ag-foreground-color: var(--bnp-black);
+  --ag-header-background-color: var(--bnp-n-lighter);
+  --ag-header-foreground-color: var(--bnp-n-darkest);
+  --ag-border-color: var(--bnp-n-light);
+  --ag-row-border-color: var(--bnp-n-lighter);
+  --ag-header-column-separator-color: var(--bnp-n-light);
+  --ag-odd-row-background-color: var(--bnp-n-lightest);
+  --ag-row-hover-color: var(--bnp-green-lightest);
+  --ag-selected-row-background-color: var(--bnp-green-lightest);
+  --ag-range-selection-border-color: var(--bnp-green);
+  --ag-input-focus-border-color: var(--bnp-green);
+  --ag-checkbox-checked-color: var(--bnp-green);
+  --ag-alpine-active-color: var(--bnp-green);
+  --ag-font-family: Roboto, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --ag-font-size: 13px;
+  --ag-grid-size: 5px;
+  --ag-cell-horizontal-padding: 14px;
+  --ag-row-height: 38px;
+  --ag-header-height: 42px;
+
+  border: 1px solid var(--bnp-n-light);
+  border-radius: var(--bnp-r-md);
+  box-shadow: var(--bnp-e1);
+  overflow: hidden;
+}
+
+.ag-theme-balham .ag-header {
+  background: var(--bnp-grad-header);
+  border-bottom: 2px solid var(--bnp-n-light);
+}
+.ag-theme-balham .ag-header-cell-text {
+  font-weight: 600;
+  letter-spacing: .3px;
+  text-transform: none;
+}
+.ag-theme-balham .ag-row {
+  transition: background var(--bnp-fast) var(--bnp-ease);
+}
+.ag-theme-balham .ag-row-selected::before {
+  background: var(--bnp-green-lightest);
+}
+/* Green edge on the row being edited -- tells you where you are in a
+   40-row grid without adding another colour to the palette. */
+.ag-theme-balham .ag-row-editing {
+  box-shadow: inset 3px 0 0 var(--bnp-green);
+  background: var(--bnp-green-lightest) !important;
+}
+
+
+/* ---------------------------------------------------------------------------
+   10. Loader
+   ------------------------------------------------------------------------ */
+.overlay {
+  background: rgba(23,24,26,.32) !important;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.loader {
+  border-top-color: var(--bnp-green) !important;
+}
+.loader::after {
+  border-left-color: var(--bnp-green-light) !important;
+}
+
+
+/* ---------------------------------------------------------------------------
+   11. Accessibility
+   ------------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+  .btn.btn-primary:hover,
+  .btn.btn-bnp-ghost:hover,
+  .icon:hover {
+    transform: none;
+  }
+}

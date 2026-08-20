@@ -1,0 +1,21 @@
+// ============================================================================
+//  SRMS OnboardingAutomationUI -- Angular Material theme
+//  Keep this file SMALL. Everything cosmetic lives in bnp-design-system.css.
+//  Rationale: a Sass compile error here kills the whole global stylesheet
+//  (that is what the `densite:` typo did). Less code here = less to break.
+// ============================================================================
+
+@use '@angular/material' as mat;
+
+html {
+  // Force light mode. mat.theme emits colours via light-dark(); without this
+  // a user on OS dark mode gets a dark app.
+  color-scheme: light;
+
+  @include mat.theme((
+    color: mat.$green-palette,   // structural only -- real BNP greens are
+                                 // applied as --mat-sys-* overrides in the CSS
+    typography: Roboto,
+    density: -2,                 // Material 7 sat at roughly -2 vs today's 0
+  ));
+}
