@@ -1,12 +1,52 @@
-managementSkills(): Observable<string[]> {
-  return (this.managementSkills$ ??= this.sp
-    .getAll<any>(LISTS.managementSkills, {
-      select: ['Title', 'Order'],
-      orderby: 'Order asc',
-      top: 500,
-    })
-    .pipe(
-      map(items => items.map(i => i.Title).filter(Boolean)),
-      shareReplay(1),
-    ));
+import { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
+
+export function multipleEmailsValidator(): ValidatorFn {
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+  return (control: AbstractControl): ValidationErrors | null => {
+    const value = control.value;
+    if (!value || typeof value !== 'string') {
+      return null; // Let Validators.required handle empty values
+    }
+
+    // Split by semicolon and trim whitespace from each email
+    const emails = value
+      .split(';')
+      .map(e => e.trim())
+      .filter(e => e.length > 0);
+
+    // If input was just trailing semicolons or spaces
+    if (emails.length === 0) {
+      return null;
+    }
+
+    // Check if every individual email is valid
+    const allValid = emails.every(email => emailRegex.test(email));
+
+    return allValid ? null : { invalidMultipleEmails: true };
+  };
 }
+
+
+
+
+PrimaryBusinessContactEmail: new FormControl('', [
+  Validators.required, 
+  multipleEmailsValidator()
+]),
+PrimaryITContactEmail: new FormControl('', [
+  Validators.required, 
+  multipleEmailsValidator()
+]),
+
+
+
+
+
+<div class="error" [class.show]="metadataManagementForm.get('PrimaryITContactEmail')?.hasError('invalidMultipleEmails')">
+  Please enter valid email address(es) separated by semicolons
+</div>
+
+
+
+
