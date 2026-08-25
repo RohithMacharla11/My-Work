@@ -1,70 +1,45 @@
-Sure — same pattern as the base64 icon: a button that reads the `FileNamePattern` field (comma-separated names/wildcards like `report_*.pdf, *.csv, invoice_?.docx`), converts each into a proper regex, and joins them with `|` into `FileNamePatternRegEx`.
+Yes — much simpler. Skip the subscriptions and snapshots entirely. Just compute what the regex *should* be from the current pattern, and compare it to what's actually in the RegEx field. If they don't match, show the error. No state tracking needed.
 
-**1. Add the conversion method in `metadata-management.component.ts`**
+**1. Add a simple getter in the component**
 
 ```ts
+get isFileNamePatternRegexOutOfSync(): boolean {
+  const pattern = this.metadataManagementForm.get('FileNamePattern')?.value;
+  const regex = this.metadataManagementForm.get('FileNamePatternRegEx')?.value;
+
+  if (!pattern) return false; // nothing to compare against
+
+  const expected = this.buildRegexFromPattern(pattern);
+  return regex !== expected;
+}
+
 generateRegexFromFileNamePattern() {
   const raw = this.metadataManagementForm.get('FileNamePattern')?.value;
   if (!raw) return;
+  this.metadataManagementForm.get('FileNamePatternRegEx')?.setValue(this.buildRegexFromPattern(raw));
+}
 
-  const patterns = raw
+private buildRegexFromPattern(raw: string): string {
+  return raw
     .split(',')
     .map((p: string) => p.trim())
-    .filter((p: string) => p.length > 0);
-
-  const regexParts = patterns.map((p: string) => this.wildcardToRegex(p));
-  const combinedRegex = regexParts.join('|');
-
-  this.metadataManagementForm.get('FileNamePatternRegEx')?.setValue(combinedRegex);
-}
-
-private wildcardToRegex(pattern: string): string {
-  // escape regex special characters first, EXCEPT * and ?
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  // convert wildcard tokens: * -> .*   and   ? -> .
-  const withWildcards = escaped
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.');
-  return `^${withWildcards}$`;
+    .filter((p: string) => p.length > 0)
+    .map((p: string) => {
+      const escaped = p.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+      return `^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`;
+    })
+    .join('|');
 }
 ```
 
-This:
-- Escapes regex metacharacters like `.`, `+`, `(`, `)` etc. so a literal `report.pdf` doesn't accidentally mean "report + any char + pdf"
-- Converts `*` → `.*` (matches any sequence) and `?` → `.` (matches any single char) — standard filename-wildcard semantics
-- Wraps each in `^...$` so it matches the whole filename, not a substring
-- Joins all of them with `|` so the final regex matches any one of the patterns
-
-Example: `report_*.pdf, invoice_?.docx` → `^report_.*\.pdf$|^invoice_.docx$`
-
-**2. HTML — add the icon next to FileNamePattern (or between the two fields)**
+**2. HTML — just call the getter directly, no subscriptions, no ngOnInit changes needed**
 
 ```html
-<div class="col-sm-3 d-flex flex-column">
-  <mat-form-field>
-    <mat-label>FileName Pattern</mat-label>
-    <input matInput placeholder="FileName Pattern" formControlName="FileNamePattern">
-    <i matSuffix
-       class="bi bi-arrow-repeat"
-       style="cursor:pointer; margin-right: 4px;"
-       (click)="generateRegexFromFileNamePattern()"
-       title="Generate RegEx from patterns">
-    </i>
-  </mat-form-field>
-</div>
-<div class="col-sm-3 d-flex flex-column">
-  <mat-form-field>
-    <mat-label>FileName Pattern RegEx</mat-label>
-    <input matInput placeholder="FileName Pattern RegEx" formControlName="FileNamePatternRegEx">
-  </mat-form-field>
+<div class="col-sm-6" *ngIf="isFileNamePatternRegexOutOfSync">
+  <div class="error show">
+    FileName Pattern and RegEx are out of sync — click the refresh icon to regenerate.
+  </div>
 </div>
 ```
 
-**Notes / edge cases to consider:**
-
-- If the user later edits `FileNamePattern` manually after already generating a regex, the two fields go out of sync until they click the icon again — that's expected/intended given your "click to regenerate" flow, but you could optionally disable/mark `FileNamePatternRegEx` as `readonly` so it's only ever set via the icon (prevents drift):
-  ```html
-  <input matInput ... formControlName="FileNamePatternRegEx" readonly>
-  ```
-- If a pattern entry has no `*` or `?` at all (i.e. an exact filename like `config.json`), it still works fine — it just becomes an exact-match regex `^config\.json$`.
-- If you want case-insensitive matching (e.g. `Report.PDF` should still match `report_*.pdf`), you'd need to either add the `i` flag when actually using the regex at validation/query time, or lowercase both sides before testing — this generator itself doesn't embed flags since JS regex literals here are just strings.
+That's it. Since it's a getter, Angular re-evaluates it every change detection cycle automatically as either field changes — no `valueChanges` subscriptions, no manual sync flags, and it works correctly for both new records and edit mode (since it's just comparing current values, not tracking history).
