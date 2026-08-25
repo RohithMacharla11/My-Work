@@ -1,98 +1,70 @@
-Here's the approach: track a per-field "mode" (encoded vs decoded), let the icon toggle between them, and always force-encode to base64 right before submit — so no matter what the user typed or what state the field is displaying in, only base64 with padding ever reaches the backend.
+Sure — same pattern as the base64 icon: a button that reads the `FileNamePattern` field (comma-separated names/wildcards like `report_*.pdf, *.csv, invoice_?.docx`), converts each into a proper regex, and joins them with `|` into `FileNamePatternRegEx`.
 
-**1. Add a state map in your component (`metadata-management.component.ts`)**
-
-```ts
-// fields that need base64 conversion
-_base64Fields = ['Owners', 'Visitors', 'LimitedVisitors', 'ManualUpload'];
-
-// tracks whether the currently displayed text is 'encoded' or 'decoded' per field
-base64Mode: { [key: string]: 'encoded' | 'decoded' } = {
-  Owners: 'decoded',
-  Visitors: 'decoded',
-  LimitedVisitors: 'decoded',
-  ManualUpload: 'decoded'
-};
-```
-
-**2. Toggle handler**
+**1. Add the conversion method in `metadata-management.component.ts`**
 
 ```ts
-toggleBase64(field: string) {
-  const control = this.metadataManagementForm.get(field);
-  const current = control?.value ?? '';
-  if (!current) return;
+generateRegexFromFileNamePattern() {
+  const raw = this.metadataManagementForm.get('FileNamePattern')?.value;
+  if (!raw) return;
 
-  if (this.base64Mode[field] === 'encoded') {
-    // currently showing base64 -> decode it to view plain text
-    try {
-      const decoded = atob(current);
-      control?.setValue(decoded);
-      this.base64Mode[field] = 'decoded';
-    } catch {
-      // not valid base64, nothing to decode
-    }
-  } else {
-    // currently showing plain text -> encode it to base64
-    const encoded = btoa(current);
-    control?.setValue(encoded);
-    this.base64Mode[field] = 'encoded';
-  }
+  const patterns = raw
+    .split(',')
+    .map((p: string) => p.trim())
+    .filter((p: string) => p.length > 0);
+
+  const regexParts = patterns.map((p: string) => this.wildcardToRegex(p));
+  const combinedRegex = regexParts.join('|');
+
+  this.metadataManagementForm.get('FileNamePatternRegEx')?.setValue(combinedRegex);
+}
+
+private wildcardToRegex(pattern: string): string {
+  // escape regex special characters first, EXCEPT * and ?
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  // convert wildcard tokens: * -> .*   and   ? -> .
+  const withWildcards = escaped
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+  return `^${withWildcards}$`;
 }
 ```
 
-**3. When loading existing metadata (edit mode)**, the values coming from the backend are already base64 — mark them as `'encoded'` right after you `setValue` them in `ngOnInit`:
+This:
+- Escapes regex metacharacters like `.`, `+`, `(`, `)` etc. so a literal `report.pdf` doesn't accidentally mean "report + any char + pdf"
+- Converts `*` → `.*` (matches any sequence) and `?` → `.` (matches any single char) — standard filename-wildcard semantics
+- Wraps each in `^...$` so it matches the whole filename, not a substring
+- Joins all of them with `|` so the final regex matches any one of the patterns
 
-```ts
-this._base64Fields.forEach(f => this.base64Mode[f] = 'encoded');
-```
-(add this right after your `Object.keys(metadata).forEach(...)` block that populates the form in edit mode)
+Example: `report_*.pdf, invoice_?.docx` → `^report_.*\.pdf$|^invoice_.docx$`
 
-**4. Force-encode on submit** — this is the key part that guarantees the backend only ever gets base64, regardless of what's currently displayed:
-
-```ts
-onSubmitClick() {
-  this.metadataManagementForm.markAllAsTouched();
-  this.metadataManagementForm.markAsDirty();
-
-  // ensure every base64 field is actually holding base64 before validation runs
-  this._base64Fields.forEach(field => {
-    const control = this.metadataManagementForm.get(field);
-    const val = control?.value;
-    if (val && this.base64Mode[field] !== 'encoded') {
-      control?.setValue(btoa(val));
-      this.base64Mode[field] = 'encoded';
-    }
-  });
-
-  if (this.metadataManagementForm.status.toLowerCase() == "valid") {
-    // ...rest of your existing submit logic
-  }
-}
-```
-
-**5. HTML — add a clickable icon inside the field** (repeat for Owners, Visitors, LimitedVisitors, ManualUpload):
+**2. HTML — add the icon next to FileNamePattern (or between the two fields)**
 
 ```html
 <div class="col-sm-3 d-flex flex-column">
   <mat-form-field>
-    <mat-label>Owners</mat-label>
-    <input matInput placeholder="Owners" formControlName="Owners" [readonly]="_metadataID == -1">
-    <mat-icon matSuffix style="cursor:pointer"
-      (click)="toggleBase64('Owners')"
-      [title]="base64Mode['Owners'] === 'encoded' ? 'Show decoded value' : 'Convert to base64'">
-      {{ base64Mode['Owners'] === 'encoded' ? 'visibility' : 'lock' }}
-    </mat-icon>
+    <mat-label>FileName Pattern</mat-label>
+    <input matInput placeholder="FileName Pattern" formControlName="FileNamePattern">
+    <i matSuffix
+       class="bi bi-arrow-repeat"
+       style="cursor:pointer; margin-right: 4px;"
+       (click)="generateRegexFromFileNamePattern()"
+       title="Generate RegEx from patterns">
+    </i>
   </mat-form-field>
-  <div class="error" [class.show]="metadataManagementForm.get('Owners')?.hasError('base64')">
-    Invalid base64 string
-  </div>
+</div>
+<div class="col-sm-3 d-flex flex-column">
+  <mat-form-field>
+    <mat-label>FileName Pattern RegEx</mat-label>
+    <input matInput placeholder="FileName Pattern RegEx" formControlName="FileNamePatternRegEx">
+  </mat-form-field>
 </div>
 ```
 
-Notes:
+**Notes / edge cases to consider:**
 
-- You need `MatIconModule` imported in your module for `<mat-icon>` to work.
-- Since your `base64Validator()` runs `atob()` on whatever is currently in the control, the field will show "Invalid base64 string" while it's in `'decoded'` (plain text) mode — that's expected; it clears once the user clicks the icon (or hits Submit, which auto-encodes).
-- `btoa`/`atob` only handle Latin1/ASCII strings; if any of these values could contain non-ASCII characters (accented names, etc.), you'll need `btoa(unescape(encodeURIComponent(str)))` and the matching `decodeURIComponent(escape(atob(str)))` to avoid `InvalidCharacterError`.
-- `[readonly]` on the input won't block the icon click, so users can still toggle view even in readonly mode — if you want to lock that down too, add `*ngIf="!isReadOnly"` around the icon or disable the click when `_metadataID == -1` isn't the condition you want.
+- If the user later edits `FileNamePattern` manually after already generating a regex, the two fields go out of sync until they click the icon again — that's expected/intended given your "click to regenerate" flow, but you could optionally disable/mark `FileNamePatternRegEx` as `readonly` so it's only ever set via the icon (prevents drift):
+  ```html
+  <input matInput ... formControlName="FileNamePatternRegEx" readonly>
+  ```
+- If a pattern entry has no `*` or `?` at all (i.e. an exact filename like `config.json`), it still works fine — it just becomes an exact-match regex `^config\.json$`.
+- If you want case-insensitive matching (e.g. `Report.PDF` should still match `report_*.pdf`), you'd need to either add the `i` flag when actually using the regex at validation/query time, or lowercase both sides before testing — this generator itself doesn't embed flags since JS regex literals here are just strings.
