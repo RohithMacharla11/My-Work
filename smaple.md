@@ -1,45 +1,31 @@
-Yes — much simpler. Skip the subscriptions and snapshots entirely. Just compute what the regex *should* be from the current pattern, and compare it to what's actually in the RegEx field. If they don't match, show the error. No state tracking needed.
+**Most Impactful GenAI / Agentic AI Solution: NexHireAI**
 
-**1. Add a simple getter in the component**
+**Business Problem / Use Case**
+Traditional hiring relies on static resumes and generic tests that don't reveal real-world job readiness. NexHireAI was built to replace that with dynamic, AI-generated skill assessments — adapting to each candidate's role and skill level — while giving recruiters data-driven insights instead of guesswork. It served two sides: candidates (skill validation, career guidance) and recruiters (evaluation, comparison, hiring decisions).
 
-```ts
-get isFileNamePatternRegexOutOfSync(): boolean {
-  const pattern = this.metadataManagementForm.get('FileNamePattern')?.value;
-  const regex = this.metadataManagementForm.get('FileNamePatternRegEx')?.value;
+**Role & Responsibilities**
+I worked as part of a 4-person team, contributing to the overall architecture and to the AI orchestration layer — designing how the app coordinates calls to the Gemini API for generating and scoring assessments, and integrating that with the Firebase backend and Next.js frontend.
 
-  if (!pattern) return false; // nothing to compare against
+**Technologies, Models, Frameworks, APIs**
+- Frontend: Next.js 14, React, TypeScript, Tailwind CSS, ShadCN UI, Monaco Editor (live coding), Zustand
+- Backend/Infra: Firebase Authentication (role-based: candidate/recruiter/admin), Firestore
+- AI layer: **Google Genkit** orchestrating **Gemini API** calls through server-side TypeScript "flows"
 
-  const expected = this.buildRegexFromPattern(pattern);
-  return regex !== expected;
-}
+**Agentic Capabilities**
+This is where it goes beyond a single prompt-response wrapper:
+- **Multi-step execution**: a candidate's action (e.g., starting an assessment) triggers a chain — generate role-specific questions → present mixed formats (MCQ/short-answer/code) → score subjective answers → update analytics — without manual intervention.
+- **Tool/API integration**: Genkit flows act as callable tools the system invokes based on context — resume analysis, job recommendation, and learning-path generation are distinct AI-driven capabilities chained into one user journey.
+- **Reasoning**: subjective/code answers are evaluated by the model against role-specific rubrics rather than simple pattern matching.
+- **Workflow automation**: the entire candidate-to-recruiter pipeline (assess → analyze → report → recommend) runs with minimal human steps in between.
 
-generateRegexFromFileNamePattern() {
-  const raw = this.metadataManagementForm.get('FileNamePattern')?.value;
-  if (!raw) return;
-  this.metadataManagementForm.get('FileNamePatternRegEx')?.setValue(this.buildRegexFromPattern(raw));
-}
+**Key Challenges**
+- Keeping AI-generated assessments **consistent and fair** across 30+ roles without hallucinated or mismatched questions.
+- Making the AI orchestration layer (Genkit flows) reliable and fast enough to feel real-time in a live coding editor.
+- Structuring Firestore data so AI outputs (scores, analytics, recommendations) stayed in sync with a role-based, multi-user system.
 
-private buildRegexFromPattern(raw: string): string {
-  return raw
-    .split(',')
-    .map((p: string) => p.trim())
-    .filter((p: string) => p.length > 0)
-    .map((p: string) => {
-      const escaped = p.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-      return `^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`;
-    })
-    .join('|');
-}
-```
+**Lessons Learned**
+- Server-side AI orchestration (rather than client-side prompt calls) is essential for security, consistency, and chaining multiple AI steps reliably.
+- Designing clear "flow" boundaries (generate vs. score vs. recommend) made the system easier to debug and extend than one monolithic prompt.
 
-**2. HTML — just call the getter directly, no subscriptions, no ngOnInit changes needed**
-
-```html
-<div class="col-sm-6" *ngIf="isFileNamePatternRegexOutOfSync">
-  <div class="error show">
-    FileName Pattern and RegEx are out of sync — click the refresh icon to regenerate.
-  </div>
-</div>
-```
-
-That's it. Since it's a getter, Angular re-evaluates it every change detection cycle automatically as either field changes — no `valueChanges` subscriptions, no manual sync flags, and it works correctly for both new records and edit mode (since it's just comparing current values, not tracking history).
+**Measurable Outcomes**
+As a team/portfolio-stage product rather than a live commercial deployment, I don't have production hiring metrics — I want to be upfront about that. What I can point to concretely: a working live deployment supporting **30+ role-specific assessment types**, a fully functional AI pipeline from assessment generation through scoring to career recommendations, and community traction on GitHub (multiple forks/stars), which validated the architecture as something others found reusable.
