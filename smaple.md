@@ -1,31 +1,63 @@
-**Most Impactful GenAI / Agentic AI Solution: NexHireAI**
+Good news: the Unicode-safe fix worked — no more silent failures, and now you get a proper caught error instead. But it's surfaced the real bug underneath, and it's different from what I guessed:
 
-**Business Problem / Use Case**
-Traditional hiring relies on static resumes and generic tests that don't reveal real-world job readiness. NexHireAI was built to replace that with dynamic, AI-generated skill assessments — adapting to each candidate's role and skill level — while giving recruiters data-driven insights instead of guesswork. It served two sides: candidates (skill validation, career guidance) and recruiters (evaluation, comparison, hiring decisions).
+```
+InvalidCharacterError: Failed to execute 'atob' on 'Window': 
+The string to be decoded is not correctly encoded.
+  at fromBase64 (...ts:270:20)
+  at toggleBase64 (...ts:282:32)
+```
 
-**Role & Responsibilities**
-I worked as part of a 4-person team, contributing to the overall architecture and to the AI orchestration layer — designing how the app coordinates calls to the Gemini API for generating and scoring assessments, and integrating that with the Firebase backend and Next.js frontend.
+This is the **decode** path throwing, not encode — `base64Mode['Owners']` thinks it's `'encoded'` (eye icon showing) so the click calls `atob()`, but the box actually contains plain text (`...ou=SRMS,ou=applications,dc=root`), which isn't valid base64. That's exactly why the "Invalid base64 string" validator error is showing too — the value really is plain text right now.
 
-**Technologies, Models, Frameworks, APIs**
-- Frontend: Next.js 14, React, TypeScript, Tailwind CSS, ShadCN UI, Monaco Editor (live coding), Zustand
-- Backend/Infra: Firebase Authentication (role-based: candidate/recruiter/admin), Firestore
-- AI layer: **Google Genkit** orchestrating **Gemini API** calls through server-side TypeScript "flows"
+**Root cause:** `base64Mode[field]` only ever gets updated inside `toggleBase64()` itself. Nothing resets it when the input's value changes some other way — you typing directly into the box, pasting a corrected DN, or a picker/autocomplete calling `setValue()`. So the sequence is: click once → encodes fine, mode flips to `'encoded'` → you edit the text directly → mode is now stale but content is plain text again → next click tries to decode plain text → throws. From your side it looks random because the icon's state and the box's actual content have drifted apart.
 
-**Agentic Capabilities**
-This is where it goes beyond a single prompt-response wrapper:
-- **Multi-step execution**: a candidate's action (e.g., starting an assessment) triggers a chain — generate role-specific questions → present mixed formats (MCQ/short-answer/code) → score subjective answers → update analytics — without manual intervention.
-- **Tool/API integration**: Genkit flows act as callable tools the system invokes based on context — resume analysis, job recommendation, and learning-path generation are distinct AI-driven capabilities chained into one user journey.
-- **Reasoning**: subjective/code answers are evaluated by the model against role-specific rubrics rather than simple pattern matching.
-- **Workflow automation**: the entire candidate-to-recruiter pipeline (assess → analyze → report → recommend) runs with minimal human steps in between.
+**Fix** — make the mode flag follow the control's actual value instead of only being set by the toggle:
 
-**Key Challenges**
-- Keeping AI-generated assessments **consistent and fair** across 30+ roles without hallucinated or mismatched questions.
-- Making the AI orchestration layer (Genkit flows) reliable and fast enough to feel real-time in a live coding editor.
-- Structuring Firestore data so AI outputs (scores, analytics, recommendations) stayed in sync with a role-based, multi-user system.
+```typescript
+// in ngOnInit, after metadataManagementForm is built
+this._base64Fields.forEach(field => {
+  this.metadataManagementForm.get(field)?.valueChanges.subscribe(() => {
+    this.base64Mode[field] = 'decoded';
+  });
+});
+```
 
-**Lessons Learned**
-- Server-side AI orchestration (rather than client-side prompt calls) is essential for security, consistency, and chaining multiple AI steps reliably.
-- Designing clear "flow" boundaries (generate vs. score vs. recommend) made the system easier to debug and extend than one monolithic prompt.
+Then make `toggleBase64`'s own `setValue` calls silent so they don't immediately trip that same listener and undo the flag you just set:
 
-**Measurable Outcomes**
-As a team/portfolio-stage product rather than a live commercial deployment, I don't have production hiring metrics — I want to be upfront about that. What I can point to concretely: a working live deployment supporting **30+ role-specific assessment types**, a fully functional AI pipeline from assessment generation through scoring to career recommendations, and community traction on GitHub (multiple forks/stars), which validated the architecture as something others found reusable.
+```typescript
+toggleBase64(field: string) {
+  const control = this.metadataManagementForm.get(field);
+  const current = control?.value ?? '';
+  if (!current) return;
+  try {
+    if (this.base64Mode[field] === 'encoded') {
+      control?.setValue(this.fromBase64(current), { emitEvent: false });
+      this.base64Mode[field] = 'decoded';
+    } else {
+      control?.setValue(this.toBase64(current), { emitEvent: false });
+      this.base64Mode[field] = 'encoded';
+    }
+  } catch (e) {
+    console.error(`toggleBase64 failed for ${field}:`, e);
+  }
+}
+```
+
+Do the same `{ emitEvent: false }` in the submit-time normalization loop:
+
+```typescript
+this._base64Fields.forEach(field => {
+  const control = this.metadataManagementForm.get(field);
+  const val = control?.value;
+  if (val && this.base64Mode[field] !== 'encoded') {
+    control?.setValue(this.toBase64(val), { emitEvent: false });
+    this.base64Mode[field] = 'encoded';
+  }
+});
+```
+
+This leaves the explicit `_base64Fields.forEach(f => this.base64Mode[f] = 'encoded')` in your metadata-load block untouched and correct — it runs *after* the `Object.keys(metadata).forEach(...setValue...)` loop, so even though that loop's `setValue` calls will trigger the new listener and set everything to `'decoded'` momentarily, the explicit assignment right after still wins.
+
+Small unrelated thing I noticed while in there: your `base64Mode` initializer has a key `ManualUpload`, but `_base64Fields` (and the `Members` form control it actually maps to) uses `'Members'` instead — so `base64Mode['Members']` starts `undefined`. Harmless today since `undefined !== 'encoded'` still routes correctly to encode, but worth aligning the key names so it doesn't bite you later.
+
+Try that and click the toggle a few times in a row, including editing the box by hand between clicks — that's the sequence that should now stay in sync.
