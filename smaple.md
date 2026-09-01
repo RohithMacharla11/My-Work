@@ -1,6 +1,21 @@
-Got it — starting completely from scratch, original code, nothing changed. Here's the whole fix, two small pieces, nothing else touched:
+You're right, and that's a real design flaw — my fix assumed "you typing = plain text," but you also need "I'm pasting in a value that's already base64." A flag that just tracks "was this edited" can never tell those two apart. The actual fix is to stop tracking a flag at all, and instead **look at what's actually in the box** every time you click — decide "is this valid base64?" fresh, each time, rather than trusting a stored state that can go stale or guess wrong.
 
-**1. Replace `toggleBase64` with this (adds try/catch to the encode side too, so it never silently freezes on an edge case):**
+**1. Add this helper — checks if a string is genuinely valid base64 (not just "looks like text"):**
+
+```typescript
+isValidBase64(value: string): boolean {
+  if (!value) return false;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return false;
+  if (value.length % 4 !== 0) return false;
+  try {
+    return btoa(atob(value)) === value; // round-trip check
+  } catch {
+    return false;
+  }
+}
+```
+
+**2. Replace `toggleBase64` — decide encode-vs-decode from content, not a flag:**
 
 ```typescript
 toggleBase64(field: string) {
@@ -9,12 +24,10 @@ toggleBase64(field: string) {
   if (!current) return;
 
   try {
-    if (this.base64Mode[field] === 'encoded') {
-      control?.setValue(atob(current));
-      this.base64Mode[field] = 'decoded';
+    if (this.isValidBase64(current)) {
+      control?.setValue(atob(current));   // it's base64 -> show plain text
     } else {
-      control?.setValue(btoa(current));
-      this.base64Mode[field] = 'encoded';
+      control?.setValue(btoa(current));   // it's plain text -> encode it
     }
   } catch (e) {
     console.error(`toggleBase64 failed for ${field}:`, e);
@@ -22,25 +35,17 @@ toggleBase64(field: string) {
 }
 ```
 
-**2. Add one new tiny method:**
-
-```typescript
-onBase64FieldEdited(field: string) {
-  this.base64Mode[field] = 'decoded';
-}
-```
-
-**3. In the template, add `(input)="onBase64FieldEdited('Owners')"` to the Owners `<input>`:**
+**3. In the template, swap `base64Mode['Owners']` for a live check** (do this for all 5 fields):
 
 ```html
-<input matInput placeholder="Owners" formControlName="Owners" [readonly]="_metadataID == -1"
-  (input)="onBase64FieldEdited('Owners')">
+[ngClass]="isValidBase64(metadataManagementForm.get('Owners')?.value) ? 'bi-eye' : 'bi-arrow-repeat'"
+[title]="isValidBase64(metadataManagementForm.get('Owners')?.value) ? 'Show decoded value' : 'Convert to base64'"
 ```
 
-(Do the same on the other four inputs too — `Visitors`, `LimitedVisitors`, `LegalHoldVisitors`, `Members` — same latent bug lives there, it just hasn't bitten you yet.)
+**4. Remove the `(input)="onBase64FieldEdited(...)"` I had you add last time** — not needed anymore, and remove/ignore the `base64Mode` property entirely. There's no more state to go stale, so there's nothing left to get out of sync.
 
-That's the whole thing. **Why this actually fixes it:** the toggle button decides encode-vs-decode based on `base64Mode[field]`, but nothing was ever resetting that flag when you typed or pasted directly into the box. So it went stale — it still said `'encoded'` even after you'd overwritten the box with plain text — and the button then quietly tried to decode plain text and did nothing. Step 3 fixes that at the source: any time you actually type or paste into the field, the flag snaps back to `'decoded'` immediately, so the button always knows what's really in the box.
+Now: paste an already-encoded value in → icon shows "eye" (it's correctly recognized as base64) → click decodes it. Type a DN or plain text in → icon shows "convert" → click encodes it. Every click just asks "is this base64 right now?" instead of trusting a memory of what happened last time.
 
-Nothing here touches `valueChanges`, `emitEvent`, or any other control — just this one method and one template attribute, so it can't ripple into the other fields' behavior.
+One honest limitation: if plain text *happens* to be made only of base64-safe characters and its length is a multiple of 4 (rare for a DN with commas/`=` as separators, but possible for a short alphanumeric name), it'll be treated as already-encoded. That's an inherent ambiguity with any implicit approach — the only way around it entirely would be an explicit "this is base64" checkbox, which is more UI than you probably want.
 
-Give that a try and let me know how it goes.
+Give this a shot — it should hold up for both directions now since there's no flag left to drift out of sync.
