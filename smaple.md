@@ -1,40 +1,19 @@
-Good news: the Unicode-safe fix worked — no more silent failures, and now you get a proper caught error instead. But it's surfaced the real bug underneath, and it's different from what I guessed:
+Got it — starting completely from scratch, original code, nothing changed. Here's the whole fix, two small pieces, nothing else touched:
 
-```
-InvalidCharacterError: Failed to execute 'atob' on 'Window': 
-The string to be decoded is not correctly encoded.
-  at fromBase64 (...ts:270:20)
-  at toggleBase64 (...ts:282:32)
-```
-
-This is the **decode** path throwing, not encode — `base64Mode['Owners']` thinks it's `'encoded'` (eye icon showing) so the click calls `atob()`, but the box actually contains plain text (`...ou=SRMS,ou=applications,dc=root`), which isn't valid base64. That's exactly why the "Invalid base64 string" validator error is showing too — the value really is plain text right now.
-
-**Root cause:** `base64Mode[field]` only ever gets updated inside `toggleBase64()` itself. Nothing resets it when the input's value changes some other way — you typing directly into the box, pasting a corrected DN, or a picker/autocomplete calling `setValue()`. So the sequence is: click once → encodes fine, mode flips to `'encoded'` → you edit the text directly → mode is now stale but content is plain text again → next click tries to decode plain text → throws. From your side it looks random because the icon's state and the box's actual content have drifted apart.
-
-**Fix** — make the mode flag follow the control's actual value instead of only being set by the toggle:
-
-```typescript
-// in ngOnInit, after metadataManagementForm is built
-this._base64Fields.forEach(field => {
-  this.metadataManagementForm.get(field)?.valueChanges.subscribe(() => {
-    this.base64Mode[field] = 'decoded';
-  });
-});
-```
-
-Then make `toggleBase64`'s own `setValue` calls silent so they don't immediately trip that same listener and undo the flag you just set:
+**1. Replace `toggleBase64` with this (adds try/catch to the encode side too, so it never silently freezes on an edge case):**
 
 ```typescript
 toggleBase64(field: string) {
   const control = this.metadataManagementForm.get(field);
   const current = control?.value ?? '';
   if (!current) return;
+
   try {
     if (this.base64Mode[field] === 'encoded') {
-      control?.setValue(this.fromBase64(current), { emitEvent: false });
+      control?.setValue(atob(current));
       this.base64Mode[field] = 'decoded';
     } else {
-      control?.setValue(this.toBase64(current), { emitEvent: false });
+      control?.setValue(btoa(current));
       this.base64Mode[field] = 'encoded';
     }
   } catch (e) {
@@ -43,21 +22,25 @@ toggleBase64(field: string) {
 }
 ```
 
-Do the same `{ emitEvent: false }` in the submit-time normalization loop:
+**2. Add one new tiny method:**
 
 ```typescript
-this._base64Fields.forEach(field => {
-  const control = this.metadataManagementForm.get(field);
-  const val = control?.value;
-  if (val && this.base64Mode[field] !== 'encoded') {
-    control?.setValue(this.toBase64(val), { emitEvent: false });
-    this.base64Mode[field] = 'encoded';
-  }
-});
+onBase64FieldEdited(field: string) {
+  this.base64Mode[field] = 'decoded';
+}
 ```
 
-This leaves the explicit `_base64Fields.forEach(f => this.base64Mode[f] = 'encoded')` in your metadata-load block untouched and correct — it runs *after* the `Object.keys(metadata).forEach(...setValue...)` loop, so even though that loop's `setValue` calls will trigger the new listener and set everything to `'decoded'` momentarily, the explicit assignment right after still wins.
+**3. In the template, add `(input)="onBase64FieldEdited('Owners')"` to the Owners `<input>`:**
 
-Small unrelated thing I noticed while in there: your `base64Mode` initializer has a key `ManualUpload`, but `_base64Fields` (and the `Members` form control it actually maps to) uses `'Members'` instead — so `base64Mode['Members']` starts `undefined`. Harmless today since `undefined !== 'encoded'` still routes correctly to encode, but worth aligning the key names so it doesn't bite you later.
+```html
+<input matInput placeholder="Owners" formControlName="Owners" [readonly]="_metadataID == -1"
+  (input)="onBase64FieldEdited('Owners')">
+```
 
-Try that and click the toggle a few times in a row, including editing the box by hand between clicks — that's the sequence that should now stay in sync.
+(Do the same on the other four inputs too — `Visitors`, `LimitedVisitors`, `LegalHoldVisitors`, `Members` — same latent bug lives there, it just hasn't bitten you yet.)
+
+That's the whole thing. **Why this actually fixes it:** the toggle button decides encode-vs-decode based on `base64Mode[field]`, but nothing was ever resetting that flag when you typed or pasted directly into the box. So it went stale — it still said `'encoded'` even after you'd overwritten the box with plain text — and the button then quietly tried to decode plain text and did nothing. Step 3 fixes that at the source: any time you actually type or paste into the field, the flag snaps back to `'decoded'` immediately, so the button always knows what's really in the box.
+
+Nothing here touches `valueChanges`, `emitEvent`, or any other control — just this one method and one template attribute, so it can't ripple into the other fields' behavior.
+
+Give that a try and let me know how it goes.
