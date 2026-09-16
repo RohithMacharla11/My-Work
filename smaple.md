@@ -1,51 +1,116 @@
-You're right, and that's a real design flaw — my fix assumed "you typing = plain text," but you also need "I'm pasting in a value that's already base64." A flag that just tracks "was this edited" can never tell those two apart. The actual fix is to stop tracking a flag at all, and instead **look at what's actually in the box** every time you click — decide "is this valid base64?" fresh, each time, rather than trusting a stored state that can go stale or guess wrong.
+Fair — here are the exact edits, file by file.
 
-**1. Add this helper — checks if a string is genuinely valid base64 (not just "looks like text"):**
+## 1. `DateTimeExtractor.cs`
 
-```typescript
-isValidBase64(value: string): boolean {
-  if (!value) return false;
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return false;
-  if (value.length % 4 !== 0) return false;
-  try {
-    return btoa(atob(value)) === value; // round-trip check
-  } catch {
-    return false;
-  }
-}
-```
+Find the `FindAdjacentTime` method and the `IsValidTime` method right after it (near the bottom of the file). Replace **both** with this:
 
-**2. Replace `toggleBase64` — decide encode-vs-decode from content, not a flag:**
+```csharp
+    private static TimeOnly? FindAdjacentTime(string[] segments, int dateSegmentIndex)
+    {
+        foreach (var idx in new[] { dateSegmentIndex + 1, dateSegmentIndex - 1 })
+        {
+            if (idx < 0 || idx >= segments.Length) continue;
+            var seg = segments[idx];
 
-```typescript
-toggleBase64(field: string) {
-  const control = this.metadataManagementForm.get(field);
-  const current = control?.value ?? '';
-  if (!current) return;
+            var m6 = TimeToken6.Match(seg);
+            if (m6.Success)
+            {
+                var h = int.Parse(m6.Groups[1].Value);
+                var mi = int.Parse(m6.Groups[2].Value);
+                var se = int.Parse(m6.Groups[3].Value);
+                if (IsValidTime(h, mi, se)) return new TimeOnly(h, mi, se);
+            }
 
-  try {
-    if (this.isValidBase64(current)) {
-      control?.setValue(atob(current));   // it's base64 -> show plain text
-    } else {
-      control?.setValue(btoa(current));   // it's plain text -> encode it
+            var m4 = TimeToken4.Match(seg);
+            if (m4.Success)
+            {
+                var h = int.Parse(m4.Groups[1].Value);
+                var mi = int.Parse(m4.Groups[2].Value);
+                if (IsValidTime(h, mi, 0)) return new TimeOnly(h, mi);
+            }
+        }
+        return null;
     }
-  } catch (e) {
-    console.error(`toggleBase64 failed for ${field}:`, e);
-  }
-}
+
+    private static bool IsValidTime(int h, int m, int s) =>
+        h is >= 0 and <= 23 && m is >= 0 and <= 59 && s is >= 0 and <= 59;
 ```
 
-**3. In the template, swap `base64Mode['Owners']` for a live check** (do this for all 5 fields):
+That replaces the old `FindAdjacentTime` + old `IsValidTime(string hh, string mm)` — delete the old versions of both, paste this in their place.
 
-```html
-[ngClass]="isValidBase64(metadataManagementForm.get('Owners')?.value) ? 'bi-eye' : 'bi-arrow-repeat'"
-[title]="isValidBase64(metadataManagementForm.get('Owners')?.value) ? 'Show decoded value' : 'Convert to base64'"
+## 2. `HealthCheckEngine.cs`
+
+**Change A** — find this block near the top of `BuildScenarioRow`:
+
+```csharp
+        // --- 1+2+3: extract + resolve date/time per row ---
+        var extractions = rows
+            .Where(r => !string.IsNullOrWhiteSpace(r.Name))
+            .Select(r => (Record: r, Extraction: _dateExtractor.Extract(r.Name!)))
+            .ToList();
 ```
 
-**4. Remove the `(input)="onBase64FieldEdited(...)"` I had you add last time** — not needed anymore, and remove/ignore the `base64Mode` property entirely. There's no more state to go stale, so there's nothing left to get out of sync.
+Replace with:
 
-Now: paste an already-encoded value in → icon shows "eye" (it's correctly recognized as base64) → click decodes it. Type a DN or plain text in → icon shows "convert" → click encodes it. Every click just asks "is this base64 right now?" instead of trusting a memory of what happened last time.
+```csharp
+        // --- 1+2+3: extract + resolve date/time per row ---
+        var extractions = new List<(ExtractRecord Record, Models.FileNameExtraction Extraction)>();
+        int extractionFailures = 0;
+        foreach (var r in rows.Where(r => !string.IsNullOrWhiteSpace(r.Name)))
+        {
+            try
+            {
+                extractions.Add((r, _dateExtractor.Extract(r.Name!)));
+            }
+            catch
+            {
+                extractionFailures++;
+                extractions.Add((r, new Models.FileNameExtraction { FileName = r.Name! }));
+            }
+        }
+```
 
-One honest limitation: if plain text *happens* to be made only of base64-safe characters and its length is a multiple of 4 (rare for a DN with commas/`=` as separators, but possible for a short alphanumeric name), it'll be treated as already-encoded. That's an inherent ambiguity with any implicit approach — the only way around it entirely would be an explicit "this is base64" checkbox, which is more UI than you probably want.
+**Change B** — a few lines further down, find:
 
-Give this a shot — it should hold up for both directions now since there's no flag left to drift out of sync.
+```csharp
+        foreach (var (record, extraction) in extractions)
+        {
+            var final = _formatResolver.ResolveFinal(extraction, preferredFormat);
+            if (final != null)
+```
+
+Replace with:
+
+```csharp
+        foreach (var (record, extraction) in extractions)
+        {
+            Models.DateCandidate? final = null;
+            try
+            {
+                final = _formatResolver.ResolveFinal(extraction, preferredFormat);
+            }
+            catch
+            {
+                extractionFailures++;
+            }
+
+            if (final != null)
+```
+
+**Change C** — further down still, find this single line:
+
+```csharp
+        if (unparsed > 0)
+            row.AddIssue($"{unparsed} of {row.TotalFilesInGroup} file(s) had no usable date (file name or fallback columns) - excluded from cadence/time/excluding-day calculations.");
+```
+
+Add one new line right after it:
+
+```csharp
+        if (unparsed > 0)
+            row.AddIssue($"{unparsed} of {row.TotalFilesInGroup} file(s) had no usable date (file name or fallback columns) - excluded from cadence/time/excluding-day calculations.");
+        if (extractionFailures > 0)
+            row.AddIssue($"{extractionFailures} file name(s) hit a parsing error (malformed/unexpected token) and were treated as unparsed rather than crashing the run.");
+```
+
+That's every change. Save both files, Ctrl+F5.
