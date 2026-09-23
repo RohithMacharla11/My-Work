@@ -1,9 +1,9 @@
 /**
  * mapToOnboardingTemplate.js
  *
- * Reads the single .xlsx file found in ./data/, remaps its columns onto the
+ * Reads the single .csv file found in ./data/, remaps its columns onto the
  * Onboarding Template column layout, and writes the result to
- * ./output/Onboarding_Template_<original filename>.xlsx
+ * ./output/Onboarding_Template_<original filename, .csv -> .xlsx>.xlsx
  *
  * Usage:
  *   npm install exceljs
@@ -13,6 +13,62 @@
 const fs = require("fs");
 const path = require("path");
 const ExcelJS = require("exceljs");
+
+// ---------------------------------------------------------------------------
+// Minimal CSV parser (handles quoted fields, embedded commas/newlines, "")
+// ---------------------------------------------------------------------------
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+
+  // Normalize line endings so \r\n inside quotes doesn't break things unexpectedly
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"' && next === '"') {
+        field += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        field += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ",") {
+        row.push(field);
+        field = "";
+      } else if (ch === "\r") {
+        // skip, handled by \n
+      } else if (ch === "\n") {
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+      } else {
+        field += ch;
+      }
+    }
+  }
+  // last field/row (file may not end with newline)
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+
+  // Drop fully-empty trailing rows
+  while (rows.length > 0 && rows[rows.length - 1].every((c) => c === "")) {
+    rows.pop();
+  }
+
+  return rows;
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -117,20 +173,20 @@ function normalizeValue(value, optional) {
 
 function findSingleInputFile() {
   if (!fs.existsSync(DATA_DIR)) {
-    console.error(`No '${DATA_DIR}/' folder found. Create it and place one .xlsx file inside.`);
+    console.error(`No '${DATA_DIR}/' folder found. Create it and place one .csv file inside.`);
     process.exit(1);
   }
   const candidates = fs
     .readdirSync(DATA_DIR)
-    .filter((f) => f.toLowerCase().endsWith(".xlsx") && !f.startsWith("~$"));
+    .filter((f) => f.toLowerCase().endsWith(".csv") && !f.startsWith("~$"));
 
   if (candidates.length === 0) {
-    console.error(`No .xlsx file found in '${DATA_DIR}/'. Place exactly one file there.`);
+    console.error(`No .csv file found in '${DATA_DIR}/'. Place exactly one file there.`);
     process.exit(1);
   }
   if (candidates.length > 1) {
     console.error(
-      `Expected exactly one .xlsx file in '${DATA_DIR}/', found ${candidates.length}: ${candidates.join(", ")}`
+      `Expected exactly one .csv file in '${DATA_DIR}/', found ${candidates.length}: ${candidates.join(", ")}`
     );
     process.exit(1);
   }
@@ -147,22 +203,26 @@ async function main() {
 
   console.log(`Reading source file: ${inputPath}`);
 
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(inputPath);
-  const sourceSheet = workbook.worksheets[0];
+  const rawText = fs.readFileSync(inputPath, "utf8").replace(/^\uFEFF/, ""); // strip BOM if present
+  const csvRows = parseCsv(rawText);
 
-  // Read header row (row 1) -> column index
-  const sourceHeaderByNormalized = {}; // normalizedHeader -> colIndex
-  const headerRow = sourceSheet.getRow(1);
-  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-    const norm = normalizeHeader(cell.value);
-    if (norm) sourceHeaderByNormalized[norm] = colNumber;
+  if (csvRows.length === 0) {
+    console.error("The CSV file appears to be empty.");
+    process.exit(1);
+  }
+
+  const sourceHeaders = csvRows[0];
+  const dataRows = csvRows.slice(1);
+  const dataRowCount = dataRows.length;
+
+  // Map normalized header -> column index (0-based)
+  const sourceHeaderByNormalized = {};
+  sourceHeaders.forEach((h, idx) => {
+    const norm = normalizeHeader(h);
+    if (norm) sourceHeaderByNormalized[norm] = idx;
   });
 
-  const totalRows = sourceSheet.rowCount; // includes header row
-  const dataRowCount = Math.max(0, totalRows - 1);
-
-  // Build output data: array of row-arrays, in TEMPLATE_COLUMNS order
+  // Build output data: array of column-arrays, in TEMPLATE_COLUMNS order
   const unmatched = [];
   const columnsData = []; // columnsData[colIdx] = array of values for each data row
 
@@ -172,10 +232,10 @@ async function main() {
     const sourceColIdx = sourceHeaderByNormalized[norm];
 
     const values = [];
-    if (sourceColIdx) {
-      for (let r = 2; r <= totalRows; r++) {
-        const cell = sourceSheet.getRow(r).getCell(sourceColIdx);
-        values.push(normalizeValue(cell.value, optional));
+    if (sourceColIdx !== undefined) {
+      for (let r = 0; r < dataRowCount; r++) {
+        const rawValue = dataRows[r][sourceColIdx];
+        values.push(normalizeValue(rawValue, optional));
       }
     } else {
       unmatched.push(templateCol);
@@ -213,7 +273,8 @@ async function main() {
   });
 
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-  const outputFilename = `Onboarding_Template_${inputFilename}`;
+  const inputBaseName = path.basename(inputFilename, path.extname(inputFilename));
+  const outputFilename = `Onboarding_Template_${inputBaseName}.xlsx`;
   const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
   await outWorkbook.xlsx.writeFile(outputPath);
