@@ -1,52 +1,227 @@
-import { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
+/**
+ * mapToOnboardingTemplate.js
+ *
+ * Reads the single .xlsx file found in ./data/, remaps its columns onto the
+ * Onboarding Template column layout, and writes the result to
+ * ./output/Onboarding_Template_<original filename>.xlsx
+ *
+ * Usage:
+ *   npm install exceljs
+ *   node mapToOnboardingTemplate.js
+ */
 
-export function multipleEmailsValidator(): ValidatorFn {
-  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+const fs = require("fs");
+const path = require("path");
+const ExcelJS = require("exceljs");
 
-  return (control: AbstractControl): ValidationErrors | null => {
-    const value = control.value;
-    if (!value || typeof value !== 'string') {
-      return null; // Let Validators.required handle empty values
-    }
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
 
-    // Split by semicolon and trim whitespace from each email
-    const emails = value
-      .split(';')
-      .map(e => e.trim())
-      .filter(e => e.length > 0);
+const DATA_DIR = "data";
+const OUTPUT_DIR = "output";
 
-    // If input was just trailing semicolons or spaces
-    if (emails.length === 0) {
-      return null;
-    }
+// Template column order (exact headers to write into the output file)
+const TEMPLATE_COLUMNS = [
+  "Record Type",
+  "Country",
+  "Application Country",
+  "Visitors",
+  "Report Code",
+  "Pattern Search",
+  "Filename Pattern RegEx",
+  "Filename Pattern",
+  "Record Description",
+  "Office of Record",
+  "Retention Requirement",
+  "Retention period",
+  "Regulatory Body",
+  "Regulatory Body State",
+  "Regulatory Body Country",
+  "Regulatory Rule",
+  "Data Classification",
+  "IT Storage Requirement",
+  "Primary Business Contact",
+  "Primary IT Contact",
+  "Disposition After",
+  "Disposition",
+  "Pattern Match Order",
+  "Owners",
+  "Limited Visitors",
+  "LegalHold Visitors",
+  "Manual Upload Members",
+  "Members",
+  "Application Owner",
+  "Application Support Group",
+  "Region",
+  "IsDisposalDynamic",
+  "IsDisposal",
+  "Primary Business Contact Email",
+  "Primary IT Contact Email",
+];
 
-    // Check if every individual email is valid
-    const allValid = emails.every(email => emailRegex.test(email));
+// Columns that are OPTIONAL: if the source cell is blank, leave the template
+// cell blank too (do NOT fill with "NA").
+const OPTIONAL_BLANK_COLUMNS = new Set([
+  "Country",
+  "Application Country",
+  "Manual Upload Members",
+  "Members",
+]);
 
-    return allValid ? null : { invalidMultipleEmails: true };
-  };
+// Every template column not in OPTIONAL_BLANK_COLUMNS is MANDATORY:
+// a blank source cell becomes "NA" in the output.
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function normalizeHeader(name) {
+  return String(name ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 }
 
+function isBlank(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string" && value.trim() === "") return true;
+  return false;
+}
 
+function normalizeValue(value, optional) {
+  if (isBlank(value)) {
+    return optional ? "" : "NA";
+  }
 
+  if (typeof value === "boolean") {
+    return value ? 1 : 0;
+  }
 
-PrimaryBusinessContactEmail: new FormControl('', [
-  Validators.required, 
-  multipleEmailsValidator()
-]),
-PrimaryITContactEmail: new FormControl('', [
-  Validators.required, 
-  multipleEmailsValidator()
-]),
+  if (typeof value === "string") {
+    const v = value.trim();
+    if (v.toUpperCase() === "TRUE") return 1;
+    if (v.toUpperCase() === "FALSE") return 0;
+    return v;
+  }
 
+  // ExcelJS may hand back rich objects (formulas, hyperlinks, dates).
+  // Fall back to their text/result if present, else the raw value.
+  if (typeof value === "object") {
+    if ("result" in value) return normalizeValue(value.result, optional);
+    if ("text" in value) return normalizeValue(value.text, optional);
+    if (value instanceof Date) return value;
+  }
 
+  return value;
+}
 
+function findSingleInputFile() {
+  if (!fs.existsSync(DATA_DIR)) {
+    console.error(`No '${DATA_DIR}/' folder found. Create it and place one .xlsx file inside.`);
+    process.exit(1);
+  }
+  const candidates = fs
+    .readdirSync(DATA_DIR)
+    .filter((f) => f.toLowerCase().endsWith(".xlsx") && !f.startsWith("~$"));
 
+  if (candidates.length === 0) {
+    console.error(`No .xlsx file found in '${DATA_DIR}/'. Place exactly one file there.`);
+    process.exit(1);
+  }
+  if (candidates.length > 1) {
+    console.error(
+      `Expected exactly one .xlsx file in '${DATA_DIR}/', found ${candidates.length}: ${candidates.join(", ")}`
+    );
+    process.exit(1);
+  }
+  return path.join(DATA_DIR, candidates[0]);
+}
 
-<div class="error" [class.show]="metadataManagementForm.get('PrimaryITContactEmail')?.hasError('invalidMultipleEmails')">
-  Please enter valid email address(es) separated by semicolons
-</div>
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
+async function main() {
+  const inputPath = findSingleInputFile();
+  const inputFilename = path.basename(inputPath);
 
+  console.log(`Reading source file: ${inputPath}`);
 
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(inputPath);
+  const sourceSheet = workbook.worksheets[0];
 
+  // Read header row (row 1) -> column index
+  const sourceHeaderByNormalized = {}; // normalizedHeader -> colIndex
+  const headerRow = sourceSheet.getRow(1);
+  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+    const norm = normalizeHeader(cell.value);
+    if (norm) sourceHeaderByNormalized[norm] = colNumber;
+  });
+
+  const totalRows = sourceSheet.rowCount; // includes header row
+  const dataRowCount = Math.max(0, totalRows - 1);
+
+  // Build output data: array of row-arrays, in TEMPLATE_COLUMNS order
+  const unmatched = [];
+  const columnsData = []; // columnsData[colIdx] = array of values for each data row
+
+  for (const templateCol of TEMPLATE_COLUMNS) {
+    const norm = normalizeHeader(templateCol);
+    const optional = OPTIONAL_BLANK_COLUMNS.has(templateCol);
+    const sourceColIdx = sourceHeaderByNormalized[norm];
+
+    const values = [];
+    if (sourceColIdx) {
+      for (let r = 2; r <= totalRows; r++) {
+        const cell = sourceSheet.getRow(r).getCell(sourceColIdx);
+        values.push(normalizeValue(cell.value, optional));
+      }
+    } else {
+      unmatched.push(templateCol);
+      const fill = optional ? "" : "NA";
+      for (let r = 0; r < dataRowCount; r++) values.push(fill);
+    }
+    columnsData.push(values);
+  }
+
+  if (unmatched.length > 0) {
+    console.log("NOTE: no matching source column found for:", unmatched);
+    console.log("      (filled per the blank/NA rule for those columns)");
+  }
+
+  // Write output workbook
+  const outWorkbook = new ExcelJS.Workbook();
+  const outSheet = outWorkbook.addWorksheet("Metadata");
+
+  outSheet.addRow(TEMPLATE_COLUMNS);
+  outSheet.getRow(1).eachCell((cell) => {
+    cell.font = { name: "Arial", bold: true };
+  });
+
+  for (let r = 0; r < dataRowCount; r++) {
+    const rowValues = columnsData.map((col) => col[r]);
+    const row = outSheet.addRow(rowValues);
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      cell.font = { name: "Arial" };
+    });
+  }
+
+  // Reasonable default column width
+  outSheet.columns.forEach((col) => {
+    col.width = 22;
+  });
+
+  if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  const outputFilename = `Onboarding_Template_${inputFilename}`;
+  const outputPath = path.join(OUTPUT_DIR, outputFilename);
+
+  await outWorkbook.xlsx.writeFile(outputPath);
+
+  console.log(`Done. Wrote ${dataRowCount} rows to: ${outputPath}`);
+}
+
+main().catch((err) => {
+  console.error("Error:", err);
+  process.exit(1);
+});
