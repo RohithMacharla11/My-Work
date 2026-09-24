@@ -168,9 +168,16 @@ function normalizeHeader(name) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// Any of these (case-insensitive, trimmed) count as "blank" in the source,
+// not just a truly empty cell.
+const BLANK_TOKENS = new Set(["", "NA", "N/A", "N.A.", "N.A", "N", "NONE", "NULL", "-"]);
+
 function isBlank(value) {
   if (value === null || value === undefined) return true;
-  if (typeof value === "string" && value.trim() === "") return true;
+  if (typeof value === "string") {
+    const v = value.trim().toUpperCase();
+    if (BLANK_TOKENS.has(v)) return true;
+  }
   return false;
 }
 
