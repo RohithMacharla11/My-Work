@@ -1,174 +1,128 @@
-Here are the exact edits — all in `HealthCheckEngine.cs` only.
+Here is everything, in order. You touch 3 files.
 
-## Change 1 — start of `Run()` method
+## 1. `base64.validator.ts` (replace the whole file)
 
-Find:
-```csharp
-    public List<HealthCheckOutputRow> Run(List<ExtractRecord> extract, List<SizePartRecord> sizeParts)
-    {
-        var output = new List<HealthCheckOutputRow>();
+```ts
+import { AbstractControl, ValidationErrors, ValidatorFn } from "@angular/forms";
 
-        var appRecordGroups = extract
-```
+// Allowed decoded values: NA, or a DN like cn=xxx,ou=group,ou=SRMS,ou=applications,dc=root
+export const DN_PATTERN = /^(NA|cn=[A-Za-z0-9_-]+,ou=group,ou=SRMS,ou=applications,dc=root)$/i;
 
-Replace with:
-```csharp
-    public List<HealthCheckOutputRow> Run(List<ExtractRecord> extract, List<SizePartRecord> sizeParts)
-    {
-        var output = new List<HealthCheckOutputRow>();
+// true only if the value is valid base64 AND decodes to an allowed value
+export function isEncodedDn(value: string): boolean {
+  if (!value) return false;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return false;
+  if (value.length % 4 !== 0) return false;
+  try {
+    return DN_PATTERN.test(atob(value));
+  } catch {
+    return false;
+  }
+}
 
-        // Build size lookups ONCE, up front. Doing a fresh .Where() scan over the whole
-        // sizeParts list for every one of potentially thousands of scenarios is what was
-        // making this run "forever" (scenarios x sizeParts comparisons). These two
-        // dictionaries turn that into an O(1) lookup per scenario instead.
-        var exactSizeIndex = new Dictionary<(string App, string Record, string FileName), List<double?>>();
-        var groupSizeIndex = new Dictionary<(string App, string Record), List<double?>>();
-        foreach (var sp in sizeParts)
-        {
-            // lower-cased keys so lookups stay case-insensitive, matching the original .Where() behaviour
-            var app = sp.ApplicationName?.Trim().ToLowerInvariant() ?? "";
-            var rec = sp.RecordType?.Trim().ToLowerInvariant() ?? "";
-            var groupKey = (app, rec);
-            if (!groupSizeIndex.TryGetValue(groupKey, out var groupList))
-            {
-                groupList = new List<double?>();
-                groupSizeIndex[groupKey] = groupList;
-            }
-            groupList.Add(sp.FileSizeBytes);
-
-            if (!string.IsNullOrWhiteSpace(sp.FileName))
-            {
-                var exactKey = (app, rec, sp.FileName.Trim().ToLowerInvariant());
-                if (!exactSizeIndex.TryGetValue(exactKey, out var exactList))
-                {
-                    exactList = new List<double?>();
-                    exactSizeIndex[exactKey] = exactList;
-                }
-                exactList.Add(sp.FileSizeBytes);
-            }
-        }
-
-        var appRecordGroups = extract
-```
-
-## Change 2 — inside the pattern-bucket loop
-
-Find:
-```csharp
-                var rowsInScenario = fileNames.SelectMany(fn => recordsByFileName[fn]).ToList();
-                var row = BuildScenarioRow(appRecordGroup.Key.App, appRecordGroup.Key.Record, template, rowsInScenario, sizeParts);
-                output.Add(row);
-```
-
-Replace with:
-```csharp
-                var rowsInScenario = fileNames.SelectMany(fn => recordsByFileName[fn]).ToList();
-                var row = BuildScenarioRow(appRecordGroup.Key.App, appRecordGroup.Key.Record, template, rowsInScenario, exactSizeIndex, groupSizeIndex);
-                output.Add(row);
-```
-
-## Change 3 — the "no file name" bucket line
-
-Find:
-```csharp
-                var row = BuildScenarioRow(appRecordGroup.Key.App, appRecordGroup.Key.Record, "(no file name)", noName, sizeParts);
-```
-
-Replace with:
-```csharp
-                var row = BuildScenarioRow(appRecordGroup.Key.App, appRecordGroup.Key.Record, "(no file name)", noName, exactSizeIndex, groupSizeIndex);
-```
-
-## Change 4 — `BuildScenarioRow` method signature
-
-Find:
-```csharp
-    private HealthCheckOutputRow BuildScenarioRow(string app, string recordType, string pattern,
-        List<ExtractRecord> rows, List<SizePartRecord> sizeParts)
-    {
-```
-
-Replace with:
-```csharp
-    private HealthCheckOutputRow BuildScenarioRow(string app, string recordType, string pattern,
-        List<ExtractRecord> rows,
-        Dictionary<(string App, string Record, string FileName), List<double?>> exactSizeIndex,
-        Dictionary<(string App, string Record), List<double?>> groupSizeIndex)
-    {
-```
-
-## Change 5 — inside `BuildScenarioRow`, the size-matching call
-
-Find:
-```csharp
-        // --- 7: size matching ---
-        var matchedSizes = MatchSizes(app, recordType, rows, sizeParts);
-```
-
-Replace with:
-```csharp
-        // --- 7: size matching ---
-        var matchedSizes = MatchSizes(app, recordType, rows, exactSizeIndex, groupSizeIndex);
-```
-
-## Change 6 — the whole `MatchSizes` method (last method in the file)
-
-Find:
-```csharp
-    private List<double?> MatchSizes(string app, string recordType, List<ExtractRecord> rows, List<SizePartRecord> sizeParts)
-    {
-        var fileNames = rows.Where(r => !string.IsNullOrWhiteSpace(r.Name)).Select(r => r.Name!.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        // Primary match: exact ApplicationName + RecordType + FileName.
-        var exact = sizeParts.Where(sp =>
-            string.Equals(sp.ApplicationName?.Trim(), app, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(sp.RecordType?.Trim(), recordType, StringComparison.OrdinalIgnoreCase) &&
-            !string.IsNullOrWhiteSpace(sp.FileName) &&
-            fileNames.Contains(sp.FileName.Trim()))
-            .ToList();
-
-        if (exact.Count > 0)
-            return exact.Select(sp => sp.FileSizeBytes).ToList();
-
-        // Fallback: same App + RecordType, any file (SIZE_PARTS naming may not exactly match extract naming) -
-        // still scoped tightly by App+RecordType so we never borrow sizes from an unrelated scenario.
-        return sizeParts.Where(sp =>
-            string.Equals(sp.ApplicationName?.Trim(), app, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(sp.RecordType?.Trim(), recordType, StringComparison.OrdinalIgnoreCase))
-            .Select(sp => sp.FileSizeBytes)
-            .ToList();
-    }
+export function base64Validator(): ValidatorFn {
+  return (control: AbstractControl): ValidationErrors | null => {
+    const value = control.value;
+    if (value === null || value === undefined || value === '')
+      return null;
+    if (typeof value !== 'string')
+      return { base64: 'Value is not a string' };
+    return isEncodedDn(value) ? null : { base64: "Invalid base64 string" };
+  };
 }
 ```
 
-Replace with:
-```csharp
-    private List<double?> MatchSizes(string app, string recordType, List<ExtractRecord> rows,
-        Dictionary<(string App, string Record, string FileName), List<double?>> exactSizeIndex,
-        Dictionary<(string App, string Record), List<double?>> groupSizeIndex)
-    {
-        var appKey = app.Trim().ToLowerInvariant();
-        var recKey = recordType.Trim().ToLowerInvariant();
-        var fileNames = rows.Where(r => !string.IsNullOrWhiteSpace(r.Name)).Select(r => r.Name!.Trim().ToLowerInvariant()).ToHashSet();
+## 2. `metadata-management.component.ts` (4 edits)
 
-        // Primary match: exact ApplicationName + RecordType + FileName, via O(1) dictionary lookups
-        // instead of scanning the whole sizeParts list per scenario (that full re-scan, repeated for
-        // every scenario, was why a 650k-row run never finished).
-        var exact = new List<double?>();
-        foreach (var fn in fileNames)
-            if (exactSizeIndex.TryGetValue((appKey, recKey, fn), out var sizes))
-                exact.AddRange(sizes);
+**a) Line 7, the import:**
+```ts
+import { base64Validator, isEncodedDn } from 'src/app/utilities/CustomValidator/base64.validator';
+```
 
-        if (exact.Count > 0)
-            return exact;
-
-        // Fallback: same App + RecordType, any file (SIZE_PARTS naming may not exactly match extract naming) -
-        // still scoped tightly by App+RecordType so we never borrow sizes from an unrelated scenario.
-        return groupSizeIndex.TryGetValue((appKey, recKey), out var groupSizes)
-            ? groupSizes
-            : new List<double?>();
+**b) In `onSubmitClick`, replace the `this._base64Fields.forEach(...)` block (lines ~185-192) with:**
+```ts
+this._base64Fields.forEach(field => {
+  const control = this.metadataManagementForm.get(field);
+  const val = control?.value;
+  // encode only if it is still plain text; never touch an already-encoded value
+  if (val && !isEncodedDn(val)) {
+    try {
+      control?.setValue(btoa(val));
+    } catch (e) {
+      console.error(`Encoding failed for ${field}`, e);
     }
+  }
+  this.base64Mode[field] = 'encoded';
+});
+```
+
+**c) Replace the whole `isValidBase64` method with:**
+```ts
+isValidBase64(value: string): boolean {
+  return isEncodedDn(value);
 }
 ```
 
-That's every change — all six are in the one file, `HealthCheckAutomation.Core/Engine/HealthCheckEngine.cs`. Save, **Ctrl+F5**. This should finish in well under a minute now instead of hanging. If it still runs long, send me the console output and we'll look at what's making the scenario count so large in the first place.
+**d) Replace the whole `toggleBase64` method with:**
+```ts
+toggleBase64(field: string) {
+  const control = this.metadataManagementForm.get(field);
+  const current = control?.value ?? '';
+  if (!current) return;
+
+  try {
+    if (this.isValidBase64(current)) {
+      control?.setValue(atob(current));   // encoded -> plain text
+      this.base64Mode[field] = 'decoded';
+    } else {
+      control?.setValue(btoa(current));   // plain text -> encoded
+      this.base64Mode[field] = 'encoded';
+    }
+  } catch (e) {
+    console.error(`toggleBase64 failed for ${field}:`, e);
+  }
+}
+```
+
+The HTML needs no change, since it already calls `isValidBase64`.
+
+## 3. `src/web.config` (replace the whole file)
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <system.webServer>
+    <staticContent>
+      <remove fileExtension=".woff" />
+      <remove fileExtension=".woff2" />
+      <mimeMap fileExtension=".woff" mimeType="font/woff" />
+      <mimeMap fileExtension=".woff2" mimeType="font/woff2" />
+    </staticContent>
+    <rewrite>
+      <rules>
+        <rule name="Angular Routes" stopProcessing="true">
+          <match url=".*" />
+          <conditions logicalGrouping="MatchAll">
+            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
+            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
+          </conditions>
+          <action type="Rewrite" url="/SRMSOnboardingAutomation/index.html" />
+        </rule>
+      </rules>
+    </rewrite>
+  </system.webServer>
+</configuration>
+```
+
+## After deploying
+1. Hard refresh (Ctrl+F5).
+2. Open the `.../media/bootstrap-icons.woff2` URL. It should download a file, not show your app.
+3. If it still shows your app, check that `media/bootstrap-icons.woff2` exists in the deployed folder (the pipeline may not be copying it).
+
+## Behavior now
+- Plain text (`cn=...` or `NA`) is encoded once on submit.
+- Already-encoded values are never re-encoded.
+- Short words like `abcd` count as plain text, because they don't decode to `NA` or a valid DN.
+- If your allowed value format ever changes, edit `DN_PATTERN` in one place.
+
+**Not changed, but worth checking:** the validator is on `ManualUpload` while the HTML field is `Members`, so `Members` has no base64 validation. If that's unintended, change `Members: new FormControl('')` in the form group to `Members: new FormControl('', base64Validator())`.
